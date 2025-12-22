@@ -1,0 +1,10 @@
+config {
+  type: "incremental",
+  schema: "ga4_reporting"
+  description: "Events records, unnested and unfiltered.  Contains light munging for data type formation",
+  tags: ["daily", "ga4", "core"],
+  bigquery: {
+    partitionBy: "event_date",
+    clusterBy: ["event_name", "session_id"],
+}
+
