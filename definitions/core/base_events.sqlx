@@ -6,5 +6,148 @@ config {
   bigquery: {
     partitionBy: "event_date",
     clusterBy: ["event_name", "session_id"],
+    }
 }
+
+
+with raw_data AS (
+
+    SELECT 
+
+        event_date,
+        event_timestamp,
+        event_name, 
+        --ADD CUSTOM EVENT PARAMS UNNESTING 
+        event_value_in_usd,
+        user_id,
+        user_pseudo_id,
+        privacy_info.analytics_storage AS privacy_analytics_storage,
+        privacy_info.ads_storage AS privacy_info_ads_storage,
+        --ADD USER PROPS PARAMS UNNESTING 
+        user_first_touch_timestamp,
+        user_ltv.revenue AS user_ltv_revenue,
+        user_ltv.currency AS user_ltv_currency,
+        
+        --device parameters 
+        device.category AS device_category,
+        device.mobile_brand_name AS device_mobile_brand_name,
+        device.mobile_model_name AS device_mobile_model_name,
+        device.mobile_marketing_name AS device_mobile_marketing_name,
+        device.mobile_os_hardware_model AS device_mobile_os_hardware_model,
+        device.operating_system AS device_operating_system,
+        device.operating_system_version AS device_operating_system_version,
+        device.vendor_id AS device_vendor_id,
+        device.advertising_id AS device_advertising_id,
+        device.language AS device_language,
+        device.is_limited_ad_tracking AS device_is_limited_ad_tracking,
+        device.time_zone_offset_seconds AS device_time_zone_offset_seconds,
+        device.browser AS device_browser,
+        device.browser_version AS device_browser_version,
+        device.web_info.browser AS device_web_info_browser,
+        device.web_info.browser_version AS device_web_info_browser_version,
+        device.web_info.hostname AS device_web_info_hostname,
+
+        --geography parameters
+        geo.continent AS geo_continent,
+        geo.country AS geo_country,
+        geo.region AS geo_region,
+        geo.city AS geo_city,
+        geo.sub_continent AS geo_sub_continent,
+        geo.metro AS geo_metro,
+
+        --app parameters
+        app_info.id AS app_info_id,
+        app_info.version AS app_info_version,
+        app_info.install_store AS app_info_install_store,
+        app_info.firebase_app_id AS app_info_firebase_app_id,
+        app_info.install_source AS app_info_install_source,
+
+        --first user traffic source
+        ${helpers.REPLACE_NULL_STRING('traffic_source.source')} AS user_source,
+        ${helpers.REPLACE_NULL_STRING('traffic_source.medium')} AS user_medium,
+        ${helpers.REPLACE_NULL_STRING('traffic_source.name')} AS user_campaign,
+
+
+        --session specific traffic source 
+        /* First User Traffic Source Values */
+
+
+/* Session Traffic Source Values. Using Cross Channel as primary traffic fields */ 
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.manual_campaign.campaign_id')} AS session_manual_campaign_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.manual_campaign.campaign_name')} AS session_manual_campaign_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.manual_campaign.source')} AS session_manual_source,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.manual_campaign.medium')} AS session_manual_medium,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.manual_campaign.term')} AS session_manual_term,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.manual_campaign.content')} AS session_manual_content,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.manual_campaign.source_platform')} AS session_manual_source_platform,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.manual_campaign.creative_format')} AS session_manual_creative_format,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.manual_campaign.marketing_tactic')} AS session_manual_marketing_tactic,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.google_ads_campaign.customer_id')} AS session_google_ads_customer_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.google_ads_campaign.account_name')} AS session_google_ads_account_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.google_ads_campaign.campaign_id')} AS session_google_ads_campaign_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.google_ads_campaign.campaign_name')} AS session_google_ads_campaign_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.google_ads_campaign.ad_group_id')} AS session_google_ads_ad_group_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.google_ads_campaign.ad_group_name')} AS session_google_ads_ad_group_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cross_channel_campaign.campaign_id')} AS session_cross_channel_campaign_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cross_channel_campaign.campaign_name')} AS session_cross_channel_campaign_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cross_channel_campaign.source')} AS session_cross_channel_source,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cross_channel_campaign.medium')} AS session_cross_channel_medium,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cross_channel_campaign.source_platform')} AS session_cross_channel_source_platform,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cross_channel_campaign.default_channel_group')} AS session_cross_channel_default_channel_group,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cross_channel_campaign.primary_channel_group')} AS session_cross_channel_primary_channel_group,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.sa360_campaign.source')} AS session_sa360_source,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.sa360_campaign.medium')} AS session_sa360_medium,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.sa360_campaign.campaign_id')} AS session_sa360_campaign_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.sa360_campaign.campaign_name')} AS session_sa360_campaign_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.sa360_campaign.ad_group_id')} AS session_sa360_ad_group_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.sa360_campaign.ad_group_name')} AS session_sa360_ad_group_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.sa360_campaign.creative_format')} AS session_sa360_creative_format,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.sa360_campaign.engine_account_name')} AS session_sa360_engine_account_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.sa360_campaign.engine_account_type')} AS session_sa360_engine_account_type,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.sa360_campaign.manager_account_name')} AS session_sa360_manager_account_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.source')} AS session_cm360_source,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.medium')} AS session_cm360_medium,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.campaign_id')} AS session_cm360_campaign_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.campaign_name')} AS session_cm360_campaign_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.account_id')} AS session_cm360_account_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.account_name')} AS session_cm360_account_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.advertiser_id')} AS session_cm360_advertiser_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.advertiser_name')} AS session_cm360_advertiser_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.creative_id')} AS session_cm360_creative_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.creative_format')} AS session_cm360_creative_format,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.creative_name')} AS session_cm360_creative_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.creative_type')} AS session_cm360_creative_type,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.creative_type_id')} AS session_cm360_creative_type_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.creative_version')} AS session_cm360_creative_version,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.placement_id')} AS session_cm360_placement_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.placement_cost_structure')} AS session_cm360_placement_cost_structure,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.placement_name')} AS session_cm360_placement_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.cm360_campaign.rendering_id')} AS session_cm360_rendering_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.partner_id')} AS session_dv360_partner_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.partner_name')} AS session_dv360_partner_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.source')} AS session_dv360_source,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.medium')} AS session_dv360_medium,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.campaign_id')} AS session_dv360_campaign_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.campaign_name')} AS session_dv360_campaign_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.exchange_id')} AS session_dv360_exchange_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.exchange_name')} AS session_dv360_exchange_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.advertiser_id')} AS session_dv360_advertiser_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.advertiser_name')} AS session_dv360_advertiser_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.creative_id')} AS session_dv360_creative_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.creative_format')} AS session_dv360_creative_format,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.creative_name')} AS session_dv360_creative_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.insertion_order_id')} AS session_dv360_insertion_order_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.insertion_order_name')} AS session_dv360_insertion_order_name,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.line_item_id')} AS session_dv360_line_item_id,
+        ${helpers.REPLACE_NULL_STRING('session_traffic_source_last_click.dv360_campaign.line_item_name')} AS session_dv360_line_item_name,
+
+
+        --event specific traffic source 
+
+
+),
+
+/* additional logic 
+add event key (event specific key), session_key (session specific key), user key (user specific key)
+create parsed date and micros formated timestamp 
 
