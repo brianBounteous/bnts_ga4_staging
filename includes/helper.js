@@ -166,9 +166,29 @@ function EXTRACT_ITEMS_ARRAY() {
     ) AS items`;
 }
 
+/**
+ * Generates the source table reference for GA4 events
+ * Excludes intraday tables to avoid scanning temporary data
+ * @returns {string} Fully qualified table reference with wildcard
+ */
+function GET_SOURCE_TABLE() {
+  return `\`${config.SOURCE_PROJECT}.${config.SOURCE_DATASET}.${config.SOURCE_TABLE_PREFIX}*\``;
+}
+
+/**
+ * Generates the WHERE clause to exclude intraday tables
+ * GA4 creates events_intraday_* tables that should be excluded from standard processing
+ * @returns {string} SQL WHERE condition to filter out intraday tables
+ */
+function EXCLUDE_INTRADAY_TABLES() {
+  return `_TABLE_SUFFIX NOT LIKE 'intraday%'`;
+}
+
 module.exports = { 
   REPLACE_NULL_STRING,
   EXTRACT_EVENT_PARAMS,
   EXTRACT_USER_PROPS,
-  EXTRACT_ITEMS_ARRAY
+  EXTRACT_ITEMS_ARRAY,
+  GET_SOURCE_TABLE,
+  EXCLUDE_INTRADAY_TABLES
 };

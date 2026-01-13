@@ -5,28 +5,36 @@ config {
   tags: ["daily", "ga4", "core"],
   bigquery: {
     partitionBy: "event_date",
-    clusterBy: ["event_name", "session_id"],
+    clusterBy: ["event_name", "session_key"],
   }
 }
 
-with raw_data AS (
+WITH raw_data AS (
 
     SELECT 
 
         event_date,
         event_timestamp,
-        event_name, 
+        event_name,
+        event_previous_timestamp,
+        event_bundle_sequence_id,
+        event_server_timestamp_offset,
+        batch_event_index,
+        batch_page_id,
 
         -- Custom Event Parameters (dynamically extracted from config)
         ${helpers.EXTRACT_EVENT_PARAMS('event_params')},
 
         event_value_in_usd,
+        user_pseudo_id,
         COALESCE(user_id, user_pseudo_id) AS user_id,
+        is_active_user,
         
         -- Privacy info as STRUCT
         STRUCT(
             privacy_info.analytics_storage,
-            privacy_info.ads_storage
+            privacy_info.ads_storage,
+            privacy_info.uses_transient_token
         ) AS privacy_info,
 
         -- Custom User Properties (dynamically extracted from config)
@@ -83,14 +91,51 @@ with raw_data AS (
         ) AS app_info,
 
         -- First user traffic source as nested STRUCT with null handling
-        struct(
-            ${helpers.REPLACE_NULL_STRING('traffic_source.source')} AS user_source,
-            ${helpers.REPLACE_NULL_STRING('traffic_source.medium')} AS user_medium,
-            ${helpers.REPLACE_NULL_STRING('traffic_source.name')} AS user_campaign, 
+        STRUCT(
+            ${helpers.REPLACE_NULL_STRING('traffic_source.source')} AS source,
+            ${helpers.REPLACE_NULL_STRING('traffic_source.medium')} AS medium,
+            ${helpers.REPLACE_NULL_STRING('traffic_source.name')} AS campaign
         ) AS first_user_traffic_source,
+
+        -- Collected traffic source as STRUCT
+        STRUCT(
+            ${helpers.REPLACE_NULL_STRING('collected_traffic_source.manual_campaign_id')} AS manual_campaign_id,
+            ${helpers.REPLACE_NULL_STRING('collected_traffic_source.manual_campaign_name')} AS manual_campaign_name,
+            ${helpers.REPLACE_NULL_STRING('collected_traffic_source.manual_source')} AS manual_source,
+            ${helpers.REPLACE_NULL_STRING('collected_traffic_source.manual_medium')} AS manual_medium,
+            ${helpers.REPLACE_NULL_STRING('collected_traffic_source.manual_term')} AS manual_term,
+            ${helpers.REPLACE_NULL_STRING('collected_traffic_source.manual_content')} AS manual_content,
+            ${helpers.REPLACE_NULL_STRING('collected_traffic_source.manual_source_platform')} AS manual_source_platform,
+            ${helpers.REPLACE_NULL_STRING('collected_traffic_source.manual_creative_format')} AS manual_creative_format,
+            ${helpers.REPLACE_NULL_STRING('collected_traffic_source.manual_marketing_tactic')} AS manual_marketing_tactic,
+            ${helpers.REPLACE_NULL_STRING('collected_traffic_source.gclid')} AS gclid,
+            ${helpers.REPLACE_NULL_STRING('collected_traffic_source.dclid')} AS dclid,
+            ${helpers.REPLACE_NULL_STRING('collected_traffic_source.srsltid')} AS srsltid
+        ) AS collected_traffic_source,
 
         stream_id,
         platform,
+        
+        -- Ecommerce as STRUCT
+        STRUCT(
+            ecommerce.transaction_id,
+            ecommerce.value,
+            ecommerce.tax,
+            ecommerce.shipping,
+            ecommerce.currency,
+            ecommerce.coupon,
+            ecommerce.affiliation,
+            ecommerce.total_item_quantity,
+            ecommerce.purchase_revenue_in_usd,
+            ecommerce.purchase_revenue,
+            ecommerce.refund_value_in_usd,
+            ecommerce.refund_value,
+            ecommerce.shipping_value_in_usd,
+            ecommerce.shipping_value,
+            ecommerce.tax_value_in_usd,
+            ecommerce.tax_value,
+            ecommerce.unique_items
+        ) AS ecommerce,
 
         -- Session Traffic Source as nested STRUCT with null handling
         STRUCT(
@@ -189,8 +234,56 @@ with raw_data AS (
         -- Items array with optional custom item parameters
         ${helpers.EXTRACT_ITEMS_ARRAY()}
 
-    FROM `server-side-bounteous-ga4-2024.analytics_452829362.events_*` 
+    FROM ${helpers.GET_SOURCE_TABLE()}
+    WHERE ${helpers.EXCLUDE_INTRADAY_TABLES()}
+        ${ when(incremental(), `AND _TABLE_SUFFIX = FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))`) }
 
+),
+
+keys_added AS (
+    SELECT
+        *,
+        
+        -- Session Key: stream_id + ga_session_id + user_id
+        CONCAT(
+            COALESCE(stream_id, ''), '-',
+            COALESCE(CAST(ga_session_id AS STRING), ''), '-',
+            COALESCE(user_id, '')
+        ) AS session_key,
+        
+        -- Event Key: globally unique hash of all identifying dimensions
+        -- Includes user_id, ga_session_id, event_timestamp, event_name, and all custom event params
+        TO_BASE64(MD5(CONCAT(
+            COALESCE(user_id, ''), '-',
+            COALESCE(CAST(ga_session_id AS STRING), ''), '-',
+            CAST(event_timestamp AS STRING), '-',
+            event_name, '-',
+            COALESCE(CAST(engagement_time_msec AS STRING), ''), '-',
+            COALESCE(CAST(engaged_session_event AS STRING), ''), '-',
+            COALESCE(CAST(entrances AS STRING), ''), '-',
+            COALESCE(CAST(firebase_conversion AS STRING), ''), '-',
+            COALESCE(firebase_screen, ''), '-',
+            COALESCE(firebase_screen_class, ''), '-',
+            COALESCE(form_name, ''), '-',
+            COALESCE(ignore_referrer, ''), '-',
+            COALESCE(page_location, ''), '-',
+            COALESCE(page_referrer, ''), '-',
+            COALESCE(page_title, ''), '-',
+            COALESCE(CAST(percent_scrolled AS STRING), ''), '-',
+            COALESCE(session_engaged, '')
+        ))) AS event_key,
+        
+        -- Page/Screen Key: session + page_location/firebase_screen (unique pages per session)
+        CONCAT(
+            CONCAT(
+                COALESCE(stream_id, ''), '-',
+                COALESCE(CAST(ga_session_id AS STRING), ''), '-',
+                COALESCE(user_id, '')
+            ), '-',
+            COALESCE(page_location, firebase_screen, '(not set)')
+        ) AS page_key
+        
+    FROM raw_data
 )
 
-SELECT * FROM raw_data
+SELECT * FROM keys_added

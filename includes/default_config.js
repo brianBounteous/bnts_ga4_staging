@@ -1,10 +1,17 @@
 /**
+ * Source table configuration
+ * Define the BigQuery project, dataset, and table prefix for GA4 data
+ */
+const SOURCE_PROJECT = 'server-side-bounteous-ga4-2024';
+const SOURCE_DATASET = 'analytics_452829362';
+const SOURCE_TABLE_PREFIX = 'events_'; // Standard GA4 events table prefix
+
+/**
  * Core event parameters configuration
  * Defines which event parameters to extract and their data types
  * Supported types: string, int, float, double
  */
 const CORE_PARAMS_ARRAY = [
-    
     {
         name: "engagement_time_msec",
         type: "int"
@@ -20,6 +27,14 @@ const CORE_PARAMS_ARRAY = [
     {
         name: "firebase_conversion",
         type: "int"
+    },
+    {
+        name: "firebase_screen",
+        type: "string"
+    },
+    {
+        name: "firebase_screen_class",
+        type: "string"
     },
     {
         name: "form_name",
@@ -50,10 +65,13 @@ const CORE_PARAMS_ARRAY = [
         type: "string"
     },
     {
+        name: "percent_scrolled",
+        type: "float"
+    },
+    {
         name: "session_engaged",
         type: "string"
     }
-   
 ];
 
 /**
@@ -63,10 +81,9 @@ const CORE_PARAMS_ARRAY = [
  */
 const CORE_USER_PROPS_ARRAY = [
     {
-        type: "string",
-        name: "user_type"
+        name: "user_type",
+        type: "string"
     }
-    
 ];
 
 /**
@@ -78,20 +95,23 @@ const CORE_USER_PROPS_ARRAY = [
 const CUSTOM_ITEMS_PARAMS = [
     // Example:
     // {
-    //     type: "string",
-    //     name: "custom_size"
+    //     name: "custom_size",
+    //     type: "string"
     // },
     // {
-    //     type: "string",
-    //     name: "custom_color"
+    //     name: "custom_color",
+    //     type: "string"
     // },
     // {
-    //     type: "double",
-    //     name: "custom_discount_rate"
+    //     name: "custom_discount_rate",
+    //     type: "double"
     // }
 ];
 
 module.exports = { 
+    SOURCE_PROJECT,
+    SOURCE_DATASET,
+    SOURCE_TABLE_PREFIX,
     CORE_PARAMS_ARRAY,
     CORE_USER_PROPS_ARRAY,
     CUSTOM_ITEMS_PARAMS
