@@ -44,7 +44,7 @@ js {
   // Log data stream configuration
   console.log(`[BASE_EVENTS] Data stream type: ${constants.DATA_STREAM_TYPE}`);
   if (constants.DATA_STREAM_TYPE === 'both') {
-    console.log(`[BASE_EVENTS] Consolidate web/app params: ${constants.CONSOLIDATE_WEB_APP_PARAMS}`);
+    console.log('[BASE_EVENTS] Consolidate web/app params: ${constants.CONSOLIDATE_WEB_APP_PARAMS}');
   }
 }
 
