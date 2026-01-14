@@ -1,11 +1,46 @@
 config {
   type: "incremental",
-  schema: "ga4_reporting",
-  description: "Events records, unnested and unfiltered. Contains light munging for data type formation",
+  schema: constants.DESTINATION_SCHEMA,
+  description: "Events records, unnested and unfiltered. Contains light munging for data type formation. Automatically backfills on first run.",
   tags: ["daily", "ga4", "core"],
   bigquery: {
     partitionBy: "event_date",
     clusterBy: ["event_name", "session_key"],
+  }
+}
+
+js {
+  // Check if base_events table already exists
+  const tableExists = BigQuery.tables.find(table => 
+    table.name === "base_events" && 
+    table.schema === constants.DESTINATION_SCHEMA
+  );
+  
+  // Determine date filter based on whether table exists
+  let dateFilter;
+  
+  if (!tableExists) {
+    // First run: backfill historical data
+    const startDate = helpers.GET_BACKFILL_START_DATE();
+    const endDate = helpers.GET_BACKFILL_END_DATE();
+    
+    const startDateSQL = startDate.includes('FORMAT_DATE') ? `(${startDate})` : `'${startDate}'`;
+    const endDateSQL = endDate.includes('FORMAT_DATE') ? `(${endDate})` : `'${endDate}'`;
+    
+    dateFilter = `AND _TABLE_SUFFIX BETWEEN ${startDateSQL} AND ${endDateSQL}`;
+    
+    console.log(`[BASE_EVENTS] Table does not exist. Running initial backfill from ${startDate} to ${endDate}`);
+  } else {
+    // Subsequent runs: incremental (yesterday only)
+    dateFilter = "AND _TABLE_SUFFIX = FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))";
+    
+    console.log(`[BASE_EVENTS] Table exists. Running incremental update for yesterday`);
+  }
+  
+  // Log data stream configuration
+  console.log(`[BASE_EVENTS] Data stream type: ${constants.DATA_STREAM_TYPE}`);
+  if (constants.DATA_STREAM_TYPE === 'both') {
+    console.log(`[BASE_EVENTS] Consolidate web/app params: ${constants.CONSOLIDATE_WEB_APP_PARAMS}`);
   }
 }
 
@@ -22,8 +57,20 @@ WITH raw_data AS (
         batch_event_index,
         batch_page_id,
 
-        -- Custom Event Parameters (dynamically extracted from config)
-        ${helpers.EXTRACT_EVENT_PARAMS('event_params')},
+        -- Core Event Parameters (always extracted)
+        ${helpers.EXTRACT_EVENT_PARAMS('event_params')}
+        
+        -- Web-specific parameters (only if DATA_STREAM_TYPE = 'web' or 'both')
+        ${ when(constants.DATA_STREAM_TYPE === 'web' || constants.DATA_STREAM_TYPE === 'both',
+            `,
+        ${helpers.EXTRACT_WEB_PARAMS('event_params')}`
+        )}
+        
+        -- App-specific parameters (only if DATA_STREAM_TYPE = 'app' or 'both')
+        ${ when(constants.DATA_STREAM_TYPE === 'app' || constants.DATA_STREAM_TYPE === 'both',
+            `,
+        ${helpers.EXTRACT_APP_PARAMS('event_params')}`
+        )},
 
         event_value_in_usd,
         user_pseudo_id,
@@ -236,9 +283,18 @@ WITH raw_data AS (
 
     FROM ${helpers.GET_SOURCE_TABLE()}
     WHERE ${helpers.EXCLUDE_INTRADAY_TABLES()}
-        ${ when(incremental(), `AND _TABLE_SUFFIX = FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))`) }
+        ${dateFilter}
 
 ),
+
+${ when(constants.DATA_STREAM_TYPE === 'both' && constants.CONSOLIDATE_WEB_APP_PARAMS, `
+consolidated_params AS (
+    SELECT
+        *,
+        ${helpers.CONSOLIDATE_PARAMS()}
+    FROM raw_data
+),
+`) }
 
 keys_added AS (
     SELECT
@@ -252,38 +308,11 @@ keys_added AS (
         ) AS session_key,
         
         -- Event Key: globally unique hash of all identifying dimensions
-        -- Includes user_id, ga_session_id, event_timestamp, event_name, and all custom event params
         TO_BASE64(MD5(CONCAT(
-            COALESCE(user_id, ''), '-',
-            COALESCE(CAST(ga_session_id AS STRING), ''), '-',
-            CAST(event_timestamp AS STRING), '-',
-            event_name, '-',
-            COALESCE(CAST(engagement_time_msec AS STRING), ''), '-',
-            COALESCE(CAST(engaged_session_event AS STRING), ''), '-',
-            COALESCE(CAST(entrances AS STRING), ''), '-',
-            COALESCE(CAST(firebase_conversion AS STRING), ''), '-',
-            COALESCE(firebase_screen, ''), '-',
-            COALESCE(firebase_screen_class, ''), '-',
-            COALESCE(form_name, ''), '-',
-            COALESCE(ignore_referrer, ''), '-',
-            COALESCE(page_location, ''), '-',
-            COALESCE(page_referrer, ''), '-',
-            COALESCE(page_title, ''), '-',
-            COALESCE(CAST(percent_scrolled AS STRING), ''), '-',
-            COALESCE(session_engaged, '')
-        ))) AS event_key,
+            ${helpers.GENERATE_EVENT_KEY_CONCAT()}
+        ))) AS event_key
         
-        -- Page/Screen Key: session + page_location/firebase_screen (unique pages per session)
-        CONCAT(
-            CONCAT(
-                COALESCE(stream_id, ''), '-',
-                COALESCE(CAST(ga_session_id AS STRING), ''), '-',
-                COALESCE(user_id, '')
-            ), '-',
-            COALESCE(page_location, firebase_screen, '(not set)')
-        ) AS page_key
-        
-    FROM raw_data
+    FROM ${ when(constants.DATA_STREAM_TYPE === 'both' && constants.CONSOLIDATE_WEB_APP_PARAMS, 'consolidated_params', 'raw_data') }
 )
 
 SELECT * FROM keys_added

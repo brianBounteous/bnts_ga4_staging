@@ -2,23 +2,17 @@ const config = require('./default_config.js');
 
 /**
  * Replaces null values and empty strings with '(not set)'
- * Used for standardizing GA4 string fields across reports
- * @param {string} fieldName - The field name or expression to check
- * @returns {string} SQL expression with null and empty string handling
  */
 function REPLACE_NULL_STRING(fieldName) {
   return `IF(${fieldName} IS NULL OR ${fieldName} = '', '(not set)', ${fieldName})`;
 }
 
 /**
- * Generates SQL for extracting event parameters from GA4's event_params array
- * Uses the CORE_PARAMS_ARRAY config to determine which parameters to extract
- * Supports types: string, int, float, double
- * @param {string} sourceArray - Name of the array field (default: 'event_params')
- * @returns {string} SQL expressions for all configured event parameters
+ * Generates SQL for extracting event parameters from an array
+ * Generic function used by EXTRACT_EVENT_PARAMS, EXTRACT_WEB_PARAMS, EXTRACT_APP_PARAMS
  */
-function EXTRACT_EVENT_PARAMS(sourceArray = 'event_params') {
-  return config.CORE_PARAMS_ARRAY.map(param => {
+function extractParamsSQL(paramsArray, sourceArray = 'event_params') {
+  return paramsArray.map(param => {
     let valueField;
     
     switch(param.type.toLowerCase()) {
@@ -42,11 +36,144 @@ function EXTRACT_EVENT_PARAMS(sourceArray = 'event_params') {
 }
 
 /**
- * Generates SQL for extracting user properties from GA4's user_properties array
- * Uses the CORE_USER_PROPS_ARRAY config to determine which properties to extract
- * Supports types: string, int, float, double
- * @param {string} sourceArray - Name of the array field (default: 'user_properties')
- * @returns {string} SQL expressions for all configured user properties
+ * Extracts core event parameters (always included)
+ */
+function EXTRACT_EVENT_PARAMS(sourceArray = 'event_params') {
+  if (config.CORE_PARAMS_ARRAY.length === 0) {
+    return '';
+  }
+  return extractParamsSQL(config.CORE_PARAMS_ARRAY, sourceArray);
+}
+
+/**
+ * Extracts web-specific parameters
+ * Only called when DATA_STREAM_TYPE = 'web' or 'both'
+ */
+function EXTRACT_WEB_PARAMS(sourceArray = 'event_params') {
+  if (config.WEB_PARAMS_ARRAY.length === 0) {
+    return '';
+  }
+  return extractParamsSQL(config.WEB_PARAMS_ARRAY, sourceArray);
+}
+
+/**
+ * Extracts app-specific parameters
+ * Only called when DATA_STREAM_TYPE = 'app' or 'both'
+ */
+function EXTRACT_APP_PARAMS(sourceArray = 'event_params') {
+  if (config.APP_PARAMS_ARRAY.length === 0) {
+    return '';
+  }
+  return extractParamsSQL(config.APP_PARAMS_ARRAY, sourceArray);
+}
+
+/**
+ * Generates consolidation SQL for web/app parameters
+ * Creates unified fields when CONSOLIDATE_WEB_APP_PARAMS = true
+ * Returns empty string if consolidation is disabled or not applicable
+ */
+function CONSOLIDATE_PARAMS() {
+  if (config.DATA_STREAM_TYPE !== 'both' || !config.CONSOLIDATE_WEB_APP_PARAMS) {
+    return '';
+  }
+  
+  // Build a map of consolidated names to their source fields
+  const consolidationMap = {};
+  
+  config.WEB_PARAMS_ARRAY.forEach(param => {
+    if (param.consolidated_name) {
+      if (!consolidationMap[param.consolidated_name]) {
+        consolidationMap[param.consolidated_name] = { web: null, app: null };
+      }
+      consolidationMap[param.consolidated_name].web = param.name;
+    }
+  });
+  
+  config.APP_PARAMS_ARRAY.forEach(param => {
+    if (param.consolidated_name) {
+      if (!consolidationMap[param.consolidated_name]) {
+        consolidationMap[param.consolidated_name] = { web: null, app: null };
+      }
+      consolidationMap[param.consolidated_name].app = param.name;
+    }
+  });
+  
+  // Generate COALESCE statements for each consolidated field
+  const consolidations = Object.keys(consolidationMap).map(consolidatedName => {
+    const sources = consolidationMap[consolidatedName];
+    const fields = [];
+    
+    if (sources.web) fields.push(sources.web);
+    if (sources.app) fields.push(sources.app);
+    
+    return `COALESCE(${fields.join(', ')}) AS ${consolidatedName}`;
+  });
+  
+  return consolidations.join(',\n        ');
+}
+
+/**
+ * Generates event key concatenation including all extracted parameters
+ * Dynamically builds the hash based on what parameters are actually extracted
+ */
+function GENERATE_EVENT_KEY_CONCAT() {
+  const fields = [
+    "COALESCE(user_id, '')",
+    "COALESCE(CAST(ga_session_id AS STRING), '')",
+    "CAST(event_timestamp AS STRING)",
+    "event_name"
+  ];
+  
+  // Add core params
+  config.CORE_PARAMS_ARRAY.forEach(param => {
+    fields.push(`COALESCE(CAST(${param.name} AS STRING), '')`);
+  });
+  
+  // Handle web/app params based on consolidation
+  if (config.DATA_STREAM_TYPE === 'both' && config.CONSOLIDATE_WEB_APP_PARAMS) {
+    // Use consolidated field names
+    const consolidatedNames = new Set();
+    
+    config.WEB_PARAMS_ARRAY.forEach(param => {
+      if (param.consolidated_name) {
+        consolidatedNames.add(param.consolidated_name);
+      }
+    });
+    
+    config.APP_PARAMS_ARRAY.forEach(param => {
+      if (param.consolidated_name) {
+        consolidatedNames.add(param.consolidated_name);
+      } else {
+        // App-only params that don't consolidate
+        fields.push(`COALESCE(CAST(${param.name} AS STRING), '')`);
+      }
+    });
+    
+    // Add consolidated fields
+    consolidatedNames.forEach(name => {
+      fields.push(`COALESCE(${name}, '')`);
+    });
+    
+  } else {
+    // Not consolidating - add web and app params separately
+    if (config.DATA_STREAM_TYPE === 'web' || config.DATA_STREAM_TYPE === 'both') {
+      config.WEB_PARAMS_ARRAY.forEach(param => {
+        fields.push(`COALESCE(${param.name}, '')`);
+      });
+    }
+    
+    if (config.DATA_STREAM_TYPE === 'app' || config.DATA_STREAM_TYPE === 'both') {
+      config.APP_PARAMS_ARRAY.forEach(param => {
+        fields.push(`COALESCE(CAST(${param.name} AS STRING), '')`);
+      });
+    }
+  }
+  
+  return fields.join(", '-', ");
+}
+
+/**
+ * Generates SQL for extracting user properties
  */
 function EXTRACT_USER_PROPS(sourceArray = 'user_properties') {
   return config.CORE_USER_PROPS_ARRAY.map(prop => {
@@ -73,11 +200,7 @@ function EXTRACT_USER_PROPS(sourceArray = 'user_properties') {
 }
 
 /**
- * Generates SQL for extracting custom item parameters
- * Internal helper function used by EXTRACT_ITEMS_ARRAY
- * @param {Array} paramsConfig - Array of parameter configurations
- * @param {string} sourceArray - Name of the array field (e.g., 'items.item_params')
- * @returns {string} SQL expressions for extracting parameters
+ * Internal helper for item params extraction
  */
 function generateItemParamsSQL(paramsConfig, sourceArray) {
   return paramsConfig.map(param => {
@@ -103,12 +226,6 @@ function generateItemParamsSQL(paramsConfig, sourceArray) {
   }).join(',\n                ');
 }
 
-/**
- * Wraps extracted parameters in a STRUCT
- * Internal helper function used by EXTRACT_ITEMS_ARRAY
- * @param {string} paramsSQL - SQL string of parameter extractions
- * @returns {string} STRUCT wrapper around parameters
- */
 function generateStructSQL(paramsSQL) {
   return `STRUCT(
                 ${paramsSQL}
@@ -116,9 +233,7 @@ function generateStructSQL(paramsSQL) {
 }
 
 /**
- * Generates SQL for extracting items array with optional custom item parameters
- * Uses CUSTOM_ITEMS_PARAMS config to determine which custom parameters to extract
- * @returns {string} Complete ARRAY/STRUCT SQL for items
+ * Generates items array extraction
  */
 function EXTRACT_ITEMS_ARRAY() {
   const hasCustomParams = config.CUSTOM_ITEMS_PARAMS && config.CUSTOM_ITEMS_PARAMS.length > 0;
@@ -166,29 +281,39 @@ function EXTRACT_ITEMS_ARRAY() {
     ) AS items`;
 }
 
-/**
- * Generates the source table reference for GA4 events
- * Excludes intraday tables to avoid scanning temporary data
- * @returns {string} Fully qualified table reference with wildcard
- */
 function GET_SOURCE_TABLE() {
   return `\`${config.SOURCE_PROJECT}.${config.SOURCE_DATASET}.${config.SOURCE_TABLE_PREFIX}*\``;
 }
 
-/**
- * Generates the WHERE clause to exclude intraday tables
- * GA4 creates events_intraday_* tables that should be excluded from standard processing
- * @returns {string} SQL WHERE condition to filter out intraday tables
- */
 function EXCLUDE_INTRADAY_TABLES() {
   return `_TABLE_SUFFIX NOT LIKE 'intraday%'`;
+}
+
+function GET_BACKFILL_START_DATE() {
+  if (config.BACKFILL_START_DATE) {
+    return config.BACKFILL_START_DATE;
+  }
+  return `FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 13 MONTH))`;
+}
+
+function GET_BACKFILL_END_DATE() {
+  if (config.BACKFILL_END_DATE) {
+    return config.BACKFILL_END_DATE;
+  }
+  return `FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))`;
 }
 
 module.exports = { 
   REPLACE_NULL_STRING,
   EXTRACT_EVENT_PARAMS,
+  EXTRACT_WEB_PARAMS,
+  EXTRACT_APP_PARAMS,
+  CONSOLIDATE_PARAMS,
+  GENERATE_EVENT_KEY_CONCAT,
   EXTRACT_USER_PROPS,
   EXTRACT_ITEMS_ARRAY,
   GET_SOURCE_TABLE,
-  EXCLUDE_INTRADAY_TABLES
+  EXCLUDE_INTRADAY_TABLES,
+  GET_BACKFILL_START_DATE,
+  GET_BACKFILL_END_DATE
 };
