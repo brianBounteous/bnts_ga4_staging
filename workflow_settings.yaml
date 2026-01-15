@@ -1,4 +1,3 @@
-defaultOutputDataset: ga4_reporting
+defaultDataset: ga4_reporting
 defaultLocation: US
 defaultProject: server-side-bounteous-ga4-2024
-
