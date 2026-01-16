@@ -3,7 +3,7 @@
  * If true, uses events_fresh_daily_* tables for yesterday's data (faster availability)
  * If false or fresh_daily tables don't exist, falls back to events_* tables
  */
-const USE_FRESH_DAILY = true;
+const USE_FRESH_DAILY = false;
 
 /**
  * Late arrival reconciliation configuration

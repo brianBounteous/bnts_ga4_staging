@@ -6,32 +6,20 @@ config {
   bigquery: {
     partitionBy: "event_date",
     clusterBy: ["event_name", "session_key"],
+    updatePartitionFilter: "event_date > DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)"
   }
-}
-
-pre_operations {
-  BEGIN
-    -- Try to get max date from existing table
-    CREATE TEMP TABLE date_checkpoint AS
-    SELECT MAX(event_date) AS checkpoint_date
-    FROM `${dataform.projectConfig.vars.SOURCE_PROJECT}.${dataform.projectConfig.vars.DESTINATION_DATASET}.base_events`;
-  EXCEPTION WHEN ERROR THEN
-    -- Table doesn't exist yet (first run), use default backfill start date
-    CREATE TEMP TABLE date_checkpoint AS
-    SELECT DATE_SUB(CURRENT_DATE(), INTERVAL 13 MONTH) AS checkpoint_date;
-  END;
 }
 
 js {
   const helpers = require('includes/helper.js');
   const config = helpers.getConfig();
   
-  let dateFilter;
-  let sourceTable;
-  let useCheckpoint = false;
+  const sourceTable = config.USE_FRESH_DAILY ? ref("events_fresh_*") : ref("events_*");
   
-  // Check if we should force backfill
+  let dateFilter;
+  
   if (config.FORCE_BACKFILL) {
+    // Backfill mode: specific date range
     const startDate = helpers.GET_BACKFILL_START_DATE();
     const endDate = helpers.GET_BACKFILL_END_DATE();
     
@@ -39,27 +27,13 @@ js {
     const endDateSQL = endDate.includes('FORMAT_DATE') ? `(${endDate})` : `'${endDate}'`;
     
     dateFilter = `_TABLE_SUFFIX BETWEEN ${startDateSQL} AND ${endDateSQL}`;
-    sourceTable = ref("events_*");
-    useCheckpoint = false;
-    
-    console.log(`[BASE_EVENTS] Running forced backfill from ${startDate} to ${endDate}`);
+    console.log(`[BASE_EVENTS] Backfill from ${startDate} to ${endDate}`);
   } else {
-    // Normal incremental mode - use checkpoint
-    sourceTable = config.USE_FRESH_DAILY ? ref("events_fresh_daily_*") : ref("events_*");
-    useCheckpoint = true;
-    
-    const tableType = config.USE_FRESH_DAILY ? 'fresh_daily' : 'events';
-    console.log(`[BASE_EVENTS] Loading data from checkpoint using ${tableType} table`);
-  }
-  
-  console.log(`[BASE_EVENTS] Data stream type: ${config.DATA_STREAM_TYPE}`);
-  if (config.DATA_STREAM_TYPE === 'both') {
-    console.log(`[BASE_EVENTS] Consolidate web/app params: ${config.CONSOLIDATE_WEB_APP_PARAMS}`);
+    // Incremental: load last 7 days (catches any gaps)
+    dateFilter = `_TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))`;
+    console.log(`[BASE_EVENTS] Incremental load (last 7 days)`);
   }
 }
-
-
-
 
 WITH raw_data AS (
 
@@ -287,16 +261,14 @@ WITH raw_data AS (
         -- Items array
         ${helpers.EXTRACT_ITEMS_ARRAY()}
 
-    FROM ${sourceTable} 
-
+    FROM ${sourceTable}
+    
     WHERE 1=1
-      ${when(useCheckpoint, `
-      -- Incremental: load all data after checkpoint
-      AND PARSE_DATE('%Y%m%d', REGEXP_EXTRACT(_TABLE_SUFFIX, '[0-9]+')) > (SELECT checkpoint_date FROM date_checkpoint)
-      `, `
-      -- Backfill mode: use explicit date range
       AND ${dateFilter}
-      `)}
+      ${ when(incremental(), `
+      -- Only load data newer than what's already in the table
+      AND PARSE_DATE('%Y%m%d', _TABLE_SUFFIX) > (SELECT COALESCE(MAX(event_date), DATE('1900-01-01')) FROM ${self()})
+      `) }
 ),
 
 
