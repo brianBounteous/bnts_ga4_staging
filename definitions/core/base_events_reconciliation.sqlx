@@ -3,7 +3,8 @@ config {
   schema: dataform.projectConfig.vars.DESTINATION_DATASET,
   description: "Reconciles late-arriving events from finalized events_* tables. Whatever is in the events_* table N days ago is the final version.",
   tags: ["daily", "ga4", "reconciliation"],
-  hasOutput: false
+  hasOutput: false,
+  dependencies: ["base_events"]  // Add this line
 }
 
 js {
@@ -134,13 +135,6 @@ USING (
         platform,
         
         STRUCT(
-            ecommerce.transaction_id,
-            ecommerce.value,
-            ecommerce.tax,
-            ecommerce.shipping,
-            ecommerce.currency,
-            ecommerce.coupon,
-            ecommerce.affiliation,
             ecommerce.total_item_quantity,
             ecommerce.purchase_revenue_in_usd,
             ecommerce.purchase_revenue,
@@ -150,7 +144,8 @@ USING (
             ecommerce.shipping_value,
             ecommerce.tax_value_in_usd,
             ecommerce.tax_value,
-            ecommerce.unique_items
+            ecommerce.unique_items,
+            ecommerce.transaction_id
         ) AS ecommerce,
 
         STRUCT(
