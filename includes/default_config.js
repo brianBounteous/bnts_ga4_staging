@@ -6,6 +6,17 @@
 const USE_FRESH_DAILY = false;
 
 /**
+ * Manual backfill mode
+ * Set to true ONLY for manual full historical backfill runs
+ * When false: initial loads use a 7-day lookback (safe default for new deployments)
+ * When true: uses BACKFILL_START_DATE and BACKFILL_END_DATE for full historical load
+ * 
+ * IMPORTANT: This should almost always be false. Only set to true when intentionally
+ * performing a full historical backfill, then set back to false.
+ */
+const FORCE_FULL_BACKFILL = false;
+
+/**
  * Late arrival reconciliation configuration
  * Number of days to look back for reconciling late-arriving events
  * Recommended: 4 (covers GA4's typical 72-hour late arrival window)
@@ -29,13 +40,19 @@ const DATA_STREAM_TYPE = 'both'; // 'web', 'app', or 'both'
 const CONSOLIDATE_WEB_APP_PARAMS = true;
 
 /**
- * Backfill configuration
- * Used for initial table creation. Determines how far back to load historical data.
+ * Full backfill configuration (only used when FORCE_FULL_BACKFILL = true)
+ * Used for manual full historical loads
  * Format: YYYYMMDD
  * If null, defaults to 13 months ago for start, yesterday for end
  */
-const BACKFILL_START_DATE = null; // e.g., '20240101' or null for auto
-const BACKFILL_END_DATE = null;   // e.g., '20241231' or null for auto
+const BACKFILL_START_DATE = null; // e.g., '20240101' or null for auto (13 months ago)
+const BACKFILL_END_DATE = null;   // e.g., '20241231' or null for auto (yesterday)
+
+/**
+ * Initial load configuration (only used when table doesn't exist and FORCE_FULL_BACKFILL = false)
+ * Number of days to load on first run
+ */
+const INITIAL_LOAD_DAYS = 7;
 
 /**
  * Destination schema for output tables
@@ -250,11 +267,13 @@ const CUSTOM_ITEMS_PARAMS = [
  */
 const coreConfig = {
     USE_FRESH_DAILY,
+    FORCE_FULL_BACKFILL,
     RECONCILIATION_LOOKBACK_DAYS,
     DATA_STREAM_TYPE,
     CONSOLIDATE_WEB_APP_PARAMS,
     BACKFILL_START_DATE,
     BACKFILL_END_DATE,
+    INITIAL_LOAD_DAYS,
     DESTINATION_SCHEMA,
     CORE_PARAMS_ARRAY,
     WEB_PARAMS_ARRAY,

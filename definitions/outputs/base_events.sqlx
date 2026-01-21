@@ -16,25 +16,50 @@ js {
   let dateFilter;
   let sourceTable;
   
-  if (config.FORCE_BACKFILL) {
-    // Backfill mode: load historical data
-    const startDate = helpers.GET_BACKFILL_START_DATE();
-    const endDate = helpers.GET_BACKFILL_END_DATE();
+  if (!incremental()) {
+    // Table doesn't exist - determine initial load strategy
     
-    const startDateSQL = startDate.includes('FORMAT_DATE') ? `(${startDate})` : `'${startDate}'`;
-    const endDateSQL = endDate.includes('FORMAT_DATE') ? `(${endDate})` : `'${endDate}'`;
-    
-    dateFilter = `_TABLE_SUFFIX BETWEEN ${startDateSQL} AND ${endDateSQL}`;
-    sourceTable = ref("events_*");
-    
-    console.log(`[BASE_EVENTS] Running backfill from ${startDate} to ${endDate}`);
+    if (config.FORCE_FULL_BACKFILL) {
+      // Manual full backfill mode
+      const startDate = helpers.GET_BACKFILL_START_DATE();
+      const endDate = helpers.GET_BACKFILL_END_DATE();
+      
+      const startDateSQL = startDate.includes('FORMAT_DATE') ? `(${startDate})` : `'${startDate}'`;
+      const endDateSQL = endDate.includes('FORMAT_DATE') ? `(${endDate})` : `'${endDate}'`;
+      
+      dateFilter = `_TABLE_SUFFIX BETWEEN ${startDateSQL} AND ${endDateSQL}`;
+      sourceTable = ref("events_*");
+      
+      console.log(`[BASE_EVENTS] FULL BACKFILL MODE: Loading from ${startDate} to ${endDate}`);
+    } else {
+      // Initial 7-day load (safe default)
+      const daysBack = config.INITIAL_LOAD_DAYS;
+      
+      if (config.USE_FRESH_DAILY) {
+        // Use fresh_daily for most recent 3 days, events_* for older dates
+        console.log(`[BASE_EVENTS] Initial ${daysBack}-day load with mixed sources`);
+        console.log(`[BASE_EVENTS] - Last 3 days: events_fresh_daily_*`);
+        console.log(`[BASE_EVENTS] - Days 4-${daysBack}: events_*`);
+        
+        //Use a UNION approach in the SQL
+        dateFilter = null; // Will be handled differently in SQL
+        sourceTable = null; // Will be handled in SQL with UNION
+      } else {
+        // Use events_* for all initial days
+        dateFilter = `_TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL ${daysBack} DAY)) 
+                      AND FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))`;
+        sourceTable = ref("events_*");
+        
+        console.log(`[BASE_EVENTS] Initial ${daysBack}-day load from events_*`);
+      }
+    }
   } else {
-    // Normal mode: just load yesterday
+    // Normal incremental mode: just load yesterday
     dateFilter = `_TABLE_SUFFIX = FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))`;
     sourceTable = config.USE_FRESH_DAILY ? ref("events_fresh_daily_*") : ref("events_*");
     
     const tableType = config.USE_FRESH_DAILY ? 'fresh_daily' : 'events';
-    console.log(`[BASE_EVENTS] Loading yesterday from ${tableType} table`);
+    console.log(`[BASE_EVENTS] Incremental load: yesterday from ${tableType}`);
   }
   
   console.log(`[BASE_EVENTS] Data stream type: ${config.DATA_STREAM_TYPE}`);
@@ -44,8 +69,32 @@ js {
 }
 
 WITH raw_data AS (
+  ${ when(!incremental() && config.USE_FRESH_DAILY && !config.FORCE_FULL_BACKFILL, 
+    `
+    -- Initial load with mixed sources: fresh_daily for recent days, events_* for older
+    SELECT * FROM ${ref("events_fresh_daily_*")}
+    WHERE _TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY))
+                             AND FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))
+    
+    UNION ALL
+    
+    SELECT * FROM ${ref("events_*")}
+    WHERE _TABLE_SUFFIX NOT LIKE 'intraday%'
+      AND _TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL ${config.INITIAL_LOAD_DAYS} DAY))
+                            AND FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY))
+    `,
+    `
+    -- Standard mode: single source
+    SELECT * FROM ${sourceTable}
+    WHERE ${dateFilter}
+      ${ when(!incremental() && !config.FORCE_FULL_BACKFILL, `AND _TABLE_SUFFIX NOT LIKE 'intraday%'`) }
+    `
+  )}
+),
 
-    SELECT 
+processed_events AS (
+
+    SELECT     
 
         PARSE_DATE('%Y%m%d', event_date) AS event_date,
         event_timestamp,
@@ -279,7 +328,7 @@ consolidated_params AS (
     SELECT
         *,
         ${helpers.CONSOLIDATE_PARAMS()}
-    FROM raw_data
+    FROM processed_events
 ),
 `) }
 
