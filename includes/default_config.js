@@ -1,280 +1,201 @@
+// ============================================================================
+// PROPERTY & DATA STREAM CONFIGURATION
+// ============================================================================
+
 /**
- * Fresh daily table configuration
- * If true, uses events_fresh_daily_* tables for yesterday's data (faster availability)
- * If false or fresh_daily tables don't exist, falls back to events_* tables
+ * GA4 Properties and Data Streams Configuration
+ * 
+ * SIMPLE MODE (default): Leave null to process all streams from the single 
+ * property/dataset defined in workflow_settings.yaml
+ * 
+ * ADVANCED MODE: Define multiple properties and granular stream-level control
+ * 
+ * Structure:
+ * {
+ *   'property_name': {
+ *     source_dataset: 'analytics_XXXXXXXXX',
+ *     streams: {
+ *       'stream_id': {
+ *         include: true/false,
+ *         stream_type: 'web'/'app',
+ *         use_fresh_daily: true/false  // Optional, defaults to global setting
+ *       }
+ *     }
+ *   }
+ * }
+ */
+const PROPERTIES_CONFIG = null;
+
+// Example multi-property configuration:
+// const PROPERTIES_CONFIG = {
+//   'main_website': {
+//     source_dataset: 'analytics_123456789',
+//     streams: {
+//       '1234567890': { include: true, stream_type: 'web' },
+//       '0987654321': { include: false, stream_type: 'app' }  // Excluded
+//     }
+//   },
+//   'mobile_app': {
+//     source_dataset: 'analytics_987654321',
+//     streams: {
+//       '5555555555': { include: true, stream_type: 'app', use_fresh_daily: false }
+//     }
+//   }
+// };
+
+/**
+ * Default data stream type (used when PROPERTIES_CONFIG is null)
+ * Options: 'web', 'app', or 'both'
+ */
+const DATA_STREAM_TYPE = 'both';
+
+/**
+ * Parameter consolidation for combined web/app streams
+ * Only applies when DATA_STREAM_TYPE = 'both' or when processing mixed stream types
+ * true: Consolidates parameters (page_location + firebase_screen → screen_location)
+ * false: Keeps web and app parameters separate
+ */
+const CONSOLIDATE_WEB_APP_PARAMS = true;
+
+// ============================================================================
+// LOAD STRATEGY CONFIGURATION
+// ============================================================================
+
+/**
+ * Fresh daily table usage
+ * true: Uses events_fresh_daily_* for recent data (faster, available ~4-6 hours after midnight)
+ * false: Uses only events_* tables (finalized, available ~24 hours after midnight)
  */
 const USE_FRESH_DAILY = false;
 
 /**
- * Manual backfill mode
- * Set to true ONLY for manual full historical backfill runs
- * When false: initial loads use a 7-day lookback (safe default for new deployments)
- * When true: uses BACKFILL_START_DATE and BACKFILL_END_DATE for full historical load
+ * Initial load size (days) - Used when base_events table doesn't exist
+ */
+const INITIAL_LOAD_DAYS = 7;
+
+// ============================================================================
+// BACKFILL CONFIGURATION
+// ============================================================================
+
+/**
+ * Manual full backfill mode - Set to true ONLY for intentional historical loads
+ * false (default): Initial loads use INITIAL_LOAD_DAYS lookback
+ * true: Uses BACKFILL_START_DATE and BACKFILL_END_DATE range
  * 
- * IMPORTANT: This should almost always be false. Only set to true when intentionally
- * performing a full historical backfill, then set back to false.
+ * IMPORTANT: Always set back to false after backfill completes
  */
 const FORCE_FULL_BACKFILL = false;
 
 /**
- * Late arrival reconciliation configuration
- * Number of days to look back for reconciling late-arriving events
- * Recommended: 4 (covers GA4's typical 72-hour late arrival window)
- * Set to 0 to disable reconciliation
+ * Backfill date range (YYYYMMDD format, only used when FORCE_FULL_BACKFILL = true)
+ * null = auto-calculate (13 months ago to yesterday)
  */
-const RECONCILIATION_LOOKBACK_DAYS = 4;
+const BACKFILL_START_DATE = null;  // e.g., '20240101'
+const BACKFILL_END_DATE = null;    // e.g., '20241231'
+
+// ============================================================================
+// PARAMETER EXTRACTION CONFIGURATION
+// ============================================================================
 
 /**
- * Data stream configuration
- * Defines what type of data is in your GA4 property
- * Options: 'web', 'app', or 'both'
- */
-const DATA_STREAM_TYPE = 'both'; // 'web', 'app', or 'both'
-
-/**
- * Parameter consolidation setting
- * Only applies when DATA_STREAM_TYPE = 'both'
- * If true: web and app parameters are consolidated (e.g., page_location + firebase_screen → screen_location)
- * If false: web and app parameters are kept separate (page_location and firebase_screen as distinct columns)
- */
-const CONSOLIDATE_WEB_APP_PARAMS = true;
-
-/**
- * Full backfill configuration (only used when FORCE_FULL_BACKFILL = true)
- * Used for manual full historical loads
- * Format: YYYYMMDD
- * If null, defaults to 13 months ago for start, yesterday for end
- */
-const BACKFILL_START_DATE = null; // e.g., '20240101' or null for auto (13 months ago)
-const BACKFILL_END_DATE = null;   // e.g., '20241231' or null for auto (yesterday)
-
-/**
- * Initial load configuration (only used when table doesn't exist and FORCE_FULL_BACKFILL = false)
- * Number of days to load on first run
- */
-const INITIAL_LOAD_DAYS = 7;
-
-/**
- * Destination schema for output tables
- */
-const DESTINATION_SCHEMA = 'ga4_reporting';
-
-/**
- * Core event parameters configuration
- * Parameters that apply to all stream types (web, app, or both)
- * These are always extracted regardless of DATA_STREAM_TYPE setting
+ * Core event parameters (extracted for all stream types)
+ * Supported types: string, int, float, double
  */
 const CORE_PARAMS_ARRAY = [
-    {
-        name: "engagement_time_msec",
-        type: "int"
-    },
-    {
-        name: "engaged_session_event",
-        type: "int"
-    },
-    {
-        name: "entrances",
-        type: "int"
-    },
-    {
-        name: "form_name",
-        type: "string"
-    },
-    {
-        name: "ga_session_id",
-        type: "int"
-    },
-    {
-        name: "ga_session_number",
-        type: "int"
-    },
-    {
-        name: "ignore_referrer",
-        type: "string"
-    },
-    {
-        name: "percent_scrolled",
-        type: "int"
-    },
-    {
-        name: "session_engaged",
-        type: "string"
-    }
+    { name: "engagement_time_msec", type: "int" },
+    { name: "engaged_session_event", type: "int" },
+    { name: "entrances", type: "int" },
+    { name: "form_name", type: "string" },
+    { name: "ga_session_id", type: "int" },
+    { name: "ga_session_number", type: "int" },
+    { name: "ignore_referrer", type: "string" },
+    { name: "percent_scrolled", type: "int" },
+    { name: "session_engaged", type: "string" }
 ];
 
 /**
- * Web-specific event parameters
- * Only extracted when DATA_STREAM_TYPE = 'web' or 'both'
- * consolidated_name: Used when CONSOLIDATE_WEB_APP_PARAMS = true (maps to unified field name)
+ * Web-specific event parameters (extracted when stream_type = 'web')
+ * consolidated_name: Used when CONSOLIDATE_WEB_APP_PARAMS = true
  */
 const WEB_PARAMS_ARRAY = [
-    {
-        name: "link_classes",
-        type: "string"
-    },
-    {
-        name: "link_text",
-        type: "string"
-    },
-    {
-        name: "link_url",
-        type: "string"
-    },
-    {
-        name: "page_location",
-        type: "string",
-        consolidated_name: "screen_location"
-    },
-    {
-        name: "page_referrer",
-        type: "string",
-        consolidated_name: "screen_referrer"
-    },
-    {
-        name: "page_title",
-        type: "string",
-        consolidated_name: "screen_title"
-    },
-    {
-        name: "video_current_time",
-        type: "int"
-    },
-    {
-        name: "video_duration",
-        type: "int"
-    },
-    {
-        name: "video_percent",
-        type: "int"
-    },
-    {
-        name: "video_provider",
-        type: "string"
-    },
-    {
-        name: "video_title",
-        type: "string"
-    },
-    {
-        name: "video_url",
-        type: "string"
-    },
-    {
-        name: "visible",
-        type: "string"
-    }
+    { name: "link_classes", type: "string" },
+    { name: "link_text", type: "string" },
+    { name: "link_url", type: "string" },
+    { name: "page_location", type: "string", consolidated_name: "screen_location" },
+    { name: "page_referrer", type: "string", consolidated_name: "screen_referrer" },
+    { name: "page_title", type: "string", consolidated_name: "screen_title" },
+    { name: "video_current_time", type: "int" },
+    { name: "video_duration", type: "int" },
+    { name: "video_percent", type: "int" },
+    { name: "video_provider", type: "string" },
+    { name: "video_title", type: "string" },
+    { name: "video_url", type: "string" },
+    { name: "visible", type: "string" }
 ];
 
 /**
- * App-specific event parameters
- * Only extracted when DATA_STREAM_TYPE = 'app' or 'both'
- * consolidated_name: Used when CONSOLIDATE_WEB_APP_PARAMS = true (maps to unified field name)
+ * App-specific event parameters (extracted when stream_type = 'app')
+ * consolidated_name: Used when CONSOLIDATE_WEB_APP_PARAMS = true
  */
 const APP_PARAMS_ARRAY = [
-    {
-        name: "firebase_conversion",
-        type: "int"
-    },
-    {
-        name: "firebase_previous_class",
-        type: "string"
-    },
-    {
-        name: "firebase_previous_id",
-        type: "string"
-    },
-    {
-        name: "firebase_previous_screen",
-        type: "string",
-        consolidated_name: "screen_referrer"
-    },
-    {
-        name: "firebase_screen",
-        type: "string",
-        consolidated_name: "screen_location"
-    },
-    {
-        name: "firebase_screen_class",
-        type: "string",
-        consolidated_name: "screen_title"
-    },
-    {
-        name: "firebase_screen_id",
-        type: "string"
-    }
+    { name: "firebase_conversion", type: "int" },
+    { name: "firebase_previous_class", type: "string" },
+    { name: "firebase_previous_id", type: "string" },
+    { name: "firebase_previous_screen", type: "string", consolidated_name: "screen_referrer" },
+    { name: "firebase_screen", type: "string", consolidated_name: "screen_location" },
+    { name: "firebase_screen_class", type: "string", consolidated_name: "screen_title" },
+    { name: "firebase_screen_id", type: "string" }
 ];
 
 /**
- * Custom event parameters configuration
- * Add any implementation-specific event parameters here
- * These are always extracted regardless of DATA_STREAM_TYPE setting
- * Use this for parameters unique to your GA4 implementation
- * Supported types: string, int, float, double
+ * Custom event parameters (implementation-specific, always extracted)
+ * Add your custom GA4 parameters here
  */
 const CUSTOM_PARAMS_ARRAY = [
     // Example:
-    // {
-    //     name: "user_role",
-    //     type: "string"
-    // },
-    // {
-    //     name: "purchase_value",
-    //     type: "double"
-    // },
-    // {
-    //     name: "item_count",
-    //     type: "int"
-    // }
+    // { name: "user_role", type: "string" },
+    // { name: "purchase_value", type: "double" },
 ];
 
 /**
- * Core user properties configuration
- * Defines which user properties to extract and their data types
+ * Core user properties to extract
  */
 const CORE_USER_PROPS_ARRAY = [
-    {
-        name: "user_type",
-        type: "string"
-    }
+    { name: "user_type", type: "string" }
 ];
 
 /**
- * Custom item parameters configuration
- * Defines which custom item parameters to extract from item_params array
- * Leave empty if no custom item parameters needed
- * Supported types: string, int, float, double
+ * Custom item parameters (extracted from items array)
  */
 const CUSTOM_ITEMS_PARAMS = [
     // Example:
-    // {
-    //     name: "custom_size",
-    //     type: "string"
-    // },
-    // {
-    //     name: "custom_color",
-    //     type: "string"
-    // },
-    // {
-    //     name: "custom_discount_rate",
-    //     type: "double"
-    // }
+    // { name: "custom_size", type: "string" },
+    // { name: "custom_color", type: "string" },
 ];
 
-/**
- * Core configuration object
- * Export all config values as a single object
- */
+// ============================================================================
+// EXPORT CONFIGURATION
+// ============================================================================
+
 const coreConfig = {
-    USE_FRESH_DAILY,
-    FORCE_FULL_BACKFILL,
-    RECONCILIATION_LOOKBACK_DAYS,
+    // Property & Stream Config
+    PROPERTIES_CONFIG,
     DATA_STREAM_TYPE,
     CONSOLIDATE_WEB_APP_PARAMS,
+    
+    // Load Strategy
+    USE_FRESH_DAILY,
+    INITIAL_LOAD_DAYS,
+    
+    // Backfill
+    FORCE_FULL_BACKFILL,
     BACKFILL_START_DATE,
     BACKFILL_END_DATE,
-    INITIAL_LOAD_DAYS,
-    DESTINATION_SCHEMA,
+    
+    // Deprecated
+    RECONCILIATION_LOOKBACK_DAYS,
+    
+    // Parameter Arrays
     CORE_PARAMS_ARRAY,
     WEB_PARAMS_ARRAY,
     APP_PARAMS_ARRAY,

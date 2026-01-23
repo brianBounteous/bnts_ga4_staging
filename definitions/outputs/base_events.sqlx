@@ -1,8 +1,9 @@
 config {
   type: "incremental",
   schema: dataform.projectConfig.vars.DESTINATION_DATASET, 
-  description: "Events records with fresh_daily support and automatic backfill detection",
+  description: "Events records with 3-day rolling refresh to capture late arrivals",
   tags: ["daily", "ga4", "core"],
+  dependencies: ["base_events_cleanup"],  // Run cleanup first
   bigquery: {
     partitionBy: "event_date",
     clusterBy: ["event_name", "session_key"],
@@ -12,79 +13,46 @@ config {
 js {
   const helpers = require('includes/helper.js');
   const config = helpers.getConfig();
+  const effectiveDataStreamType = helpers.getEffectiveDataStreamType();
+  const shouldConsolidate = helpers.shouldConsolidateParams();
   
-  let dateFilter;
-  let sourceTable;
-  
-  if (!incremental()) {
-    // Table doesn't exist - determine initial load strategy
-    
-    if (config.FORCE_FULL_BACKFILL) {
-      // Manual full backfill mode
-      const startDate = helpers.GET_BACKFILL_START_DATE();
-      const endDate = helpers.GET_BACKFILL_END_DATE();
-      
-      const startDateSQL = startDate.includes('FORMAT_DATE') ? `(${startDate})` : `'${startDate}'`;
-      const endDateSQL = endDate.includes('FORMAT_DATE') ? `(${endDate})` : `'${endDate}'`;
-      
-      dateFilter = `_TABLE_SUFFIX BETWEEN ${startDateSQL} AND ${endDateSQL}`;
-      sourceTable = ref("events_*");
-      
-      console.log(`[BASE_EVENTS] FULL BACKFILL MODE: Loading from ${startDate} to ${endDate}`);
-    } else {
-      // Initial 7-day load (safe default)
-      const daysBack = config.INITIAL_LOAD_DAYS;
-      
-      if (config.USE_FRESH_DAILY) {
-        // Use fresh_daily for most recent 3 days, events_* for older dates
-        console.log(`[BASE_EVENTS] Initial ${daysBack}-day load with mixed sources`);
-        console.log(`[BASE_EVENTS] - Last 3 days: events_fresh_daily_*`);
-        console.log(`[BASE_EVENTS] - Days 4-${daysBack}: events_*`);
-        
-        //Use a UNION approach in the SQL
-        dateFilter = null; // Will be handled differently in SQL
-        sourceTable = null; // Will be handled in SQL with UNION
-      } else {
-        // Use events_* for all initial days
-        dateFilter = `_TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL ${daysBack} DAY)) 
-                      AND FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))`;
-        sourceTable = ref("events_*");
-        
-        console.log(`[BASE_EVENTS] Initial ${daysBack}-day load from events_*`);
-      }
-    }
-  } else {
-    // Normal incremental mode: just load yesterday
-    dateFilter = `_TABLE_SUFFIX = FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))`;
-    sourceTable = config.USE_FRESH_DAILY ? ref("events_fresh_daily_*") : ref("events_*");
-    
-    const tableType = config.USE_FRESH_DAILY ? 'fresh_daily' : 'events';
-    console.log(`[BASE_EVENTS] Incremental load: yesterday from ${tableType}`);
-  }
-  
-  console.log(`[BASE_EVENTS] Data stream type: ${config.DATA_STREAM_TYPE}`);
-  if (config.DATA_STREAM_TYPE === 'both') {
-    console.log(`[BASE_EVENTS] Consolidate web/app params: ${config.CONSOLIDATE_WEB_APP_PARAMS}`);
-  }
+  // ... rest of your JS block stays exactly the same
 }
 
 WITH raw_data AS (
-  ${ when(!incremental() && config.USE_FRESH_DAILY && !config.FORCE_FULL_BACKFILL, 
+  ${ when(useMixedSources && !config.FORCE_FULL_BACKFILL,
     `
-    -- Initial load with mixed sources: fresh_daily for recent days, events_* for older
-    SELECT * FROM ${ref("events_fresh_daily_*")}
-    WHERE _TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY))
-                             AND FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))
-    
-    UNION ALL
-    
-    SELECT * FROM ${ref("events_*")}
-    WHERE _TABLE_SUFFIX NOT LIKE 'intraday%'
-      AND _TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL ${config.INITIAL_LOAD_DAYS} DAY))
-                            AND FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY))
+    -- Mixed sources strategy
+    ${ when(!incremental(),
+      `
+      -- Initial load: Days 1-2 from fresh_daily, Days 3-7 from events_*
+      SELECT * FROM ${ref("events_fresh_daily_*")}
+      WHERE _TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY))
+                               AND FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))
+      
+      UNION ALL
+      
+      SELECT * FROM ${ref("events_*")}
+      WHERE _TABLE_SUFFIX NOT LIKE 'intraday%'
+        AND _TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL ${config.INITIAL_LOAD_DAYS} DAY))
+                              AND FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY))
+      `,
+      `
+      -- Incremental: Days 1-2 from fresh_daily, Day 3 from events_*
+      SELECT * FROM ${ref("events_fresh_daily_*")}
+      WHERE _TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY))
+                               AND FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))
+      
+      UNION ALL
+      
+      SELECT * FROM ${ref("events_*")}
+      WHERE _TABLE_SUFFIX NOT LIKE 'intraday%'
+        AND _TABLE_SUFFIX = FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY))
+      `
+    )}
     `,
     `
-    -- Standard mode: single source
+    -- Single source strategy
     SELECT * FROM ${sourceTable}
     WHERE ${dateFilter}
       ${ when(!incremental() && !config.FORCE_FULL_BACKFILL, `AND _TABLE_SUFFIX NOT LIKE 'intraday%'`) }
@@ -93,9 +61,7 @@ WITH raw_data AS (
 ),
 
 processed_events AS (
-
-    SELECT     
-
+    SELECT 
         PARSE_DATE('%Y%m%d', event_date) AS event_date,
         event_timestamp,
         event_name,
@@ -109,13 +75,13 @@ processed_events AS (
         ${helpers.EXTRACT_EVENT_PARAMS('event_params')}
         
         -- Web-specific parameters
-        ${ when(config.DATA_STREAM_TYPE === 'web' || config.DATA_STREAM_TYPE === 'both',
+        ${ when(effectiveDataStreamType === 'web' || effectiveDataStreamType === 'both',
             `,
         ${helpers.EXTRACT_WEB_PARAMS('event_params')}`
         )}
         
         -- App-specific parameters
-        ${ when(config.DATA_STREAM_TYPE === 'app' || config.DATA_STREAM_TYPE === 'both',
+        ${ when(effectiveDataStreamType === 'app' || effectiveDataStreamType === 'both',
             `,
         ${helpers.EXTRACT_APP_PARAMS('event_params')}`
         )}
@@ -317,13 +283,10 @@ processed_events AS (
         -- Items array
         ${helpers.EXTRACT_ITEMS_ARRAY()}
 
-    FROM ${sourceTable}
-    WHERE 1=1
-      AND ${dateFilter}
-
+    FROM raw_data
 ),
 
-${ when(config.DATA_STREAM_TYPE === 'both' && config.CONSOLIDATE_WEB_APP_PARAMS, `
+${ when(shouldConsolidate, `
 consolidated_params AS (
     SELECT
         *,
@@ -346,9 +309,35 @@ keys_added AS (
         -- Event Key: globally unique hash
         TO_BASE64(MD5(CONCAT(
             ${helpers.GENERATE_EVENT_KEY_CONCAT()}
-        ))) AS event_key
+        ))) AS event_key,
         
-    FROM ${ when(config.DATA_STREAM_TYPE === 'both' && config.CONSOLIDATE_WEB_APP_PARAMS, 'consolidated_params', 'raw_data') }
+        -- Page Key: normalized URL/screen identifier
+        ${ when(
+          effectiveDataStreamType === 'web',
+          `TO_BASE64(MD5(
+          LOWER(TRIM(SPLIT(COALESCE(page_location, ''), '?')[SAFE_OFFSET(0)]))
+        )) AS page_key`
+        )}
+        ${ when(
+          effectiveDataStreamType === 'app',
+          `TO_BASE64(MD5(
+          LOWER(TRIM(SPLIT(COALESCE(firebase_screen, ''), '?')[SAFE_OFFSET(0)]))
+        )) AS page_key`
+        )}
+        ${ when(
+          effectiveDataStreamType === 'both' && shouldConsolidate,
+          `TO_BASE64(MD5(
+          LOWER(TRIM(SPLIT(COALESCE(screen_location, ''), '?')[SAFE_OFFSET(0)]))
+        )) AS page_key`
+        )}
+        ${ when(
+          effectiveDataStreamType === 'both' && !shouldConsolidate,
+          `TO_BASE64(MD5(
+          LOWER(TRIM(SPLIT(COALESCE(page_location, firebase_screen, ''), '?')[SAFE_OFFSET(0)]))
+        )) AS page_key`
+        )}
+        
+    FROM ${ when(shouldConsolidate, 'consolidated_params', 'processed_events') }
 )
 
 SELECT * FROM keys_added

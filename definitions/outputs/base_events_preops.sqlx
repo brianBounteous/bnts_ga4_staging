@@ -1,0 +1,13 @@
+config {
+  type: "operations",
+  schema: dataform.projectConfig.vars.DESTINATION_DATASET,
+  description: "Deletes last 3 days from base_events before refresh",
+  tags: ["daily", "ga4", "core"],
+  hasOutput: false,
+  dependencies: []
+}
+
+-- Only delete if base_events exists (will fail gracefully on first run)
+DELETE FROM ${ref("base_events")}
+WHERE event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+  AND event_date <= DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)

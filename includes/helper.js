@@ -8,6 +8,114 @@ const getConfig = () => {
 
 const config = getConfig();
 
+// ============================================================================
+// PROPERTY & STREAM CONFIGURATION HELPERS
+// ============================================================================
+
+/**
+ * Determines if using simple or advanced property configuration
+ * @returns {boolean} True if using PROPERTIES_CONFIG, false if using simple mode
+ */
+function isAdvancedMode() {
+  return config.PROPERTIES_CONFIG !== null && config.PROPERTIES_CONFIG !== undefined;
+}
+
+/**
+ * Gets all included streams across all properties
+ * @returns {Array} Array of stream objects with property and stream metadata
+ */
+function getIncludedStreams() {
+  if (!isAdvancedMode()) {
+    return [{
+      simple_mode: true,
+      stream_type: config.DATA_STREAM_TYPE,
+      use_fresh_daily: config.USE_FRESH_DAILY
+    }];
+  }
+  
+  const streams = [];
+  Object.keys(config.PROPERTIES_CONFIG).forEach(propertyName => {
+    const property = config.PROPERTIES_CONFIG[propertyName];
+    Object.keys(property.streams).forEach(streamId => {
+      const stream = property.streams[streamId];
+      if (stream.include !== false) {
+        streams.push({
+          property_name: propertyName,
+          stream_id: streamId,
+          stream_type: stream.stream_type,
+          source_dataset: property.source_dataset,
+          use_fresh_daily: stream.use_fresh_daily !== undefined ? stream.use_fresh_daily : config.USE_FRESH_DAILY
+        });
+      }
+    });
+  });
+  
+  return streams;
+}
+
+/**
+ * Gets the effective data stream type based on included streams
+ * @returns {string} 'web', 'app', or 'both'
+ */
+function getEffectiveDataStreamType() {
+  if (!isAdvancedMode()) {
+    return config.DATA_STREAM_TYPE;
+  }
+  
+  const streams = getIncludedStreams();
+  const hasWeb = streams.some(s => s.stream_type === 'web');
+  const hasApp = streams.some(s => s.stream_type === 'app');
+  
+  if (hasWeb && hasApp) return 'both';
+  if (hasWeb) return 'web';
+  if (hasApp) return 'app';
+  
+  return 'both';
+}
+
+/**
+ * Determines if parameter consolidation should occur
+ * @returns {boolean}
+ */
+function shouldConsolidateParams() {
+  const effectiveType = getEffectiveDataStreamType();
+  return effectiveType === 'both' && config.CONSOLIDATE_WEB_APP_PARAMS;
+}
+
+/**
+ * Generates SQL filter for stream_id (used in advanced mode)
+ * @param {string} propertyName - Property name from PROPERTIES_CONFIG
+ * @returns {string} SQL WHERE clause fragment for stream filtering
+ */
+function generateStreamFilter(propertyName) {
+  if (!isAdvancedMode()) {
+    return '1=1';
+  }
+  
+  const property = config.PROPERTIES_CONFIG[propertyName];
+  if (!property) {
+    throw new Error(`Property ${propertyName} not found in PROPERTIES_CONFIG`);
+  }
+  
+  const includedStreamIds = Object.keys(property.streams)
+    .filter(streamId => property.streams[streamId].include !== false)
+    .map(streamId => `'${streamId}'`);
+  
+  if (includedStreamIds.length === 0) {
+    return '1=0';
+  }
+  
+  if (includedStreamIds.length === 1) {
+    return `stream_id = ${includedStreamIds[0]}`;
+  }
+  
+  return `stream_id IN (${includedStreamIds.join(', ')})`;
+}
+
+// ============================================================================
+// STRING MANIPULATION HELPERS
+// ============================================================================
+
 /**
  * Replaces null values and empty strings with '(not set)'
  * Used for standardizing GA4 string fields across reports
@@ -17,6 +125,10 @@ const config = getConfig();
 function REPLACE_NULL_STRING(fieldName) {
   return `IF(${fieldName} IS NULL OR ${fieldName} = '', '(not set)', ${fieldName})`;
 }
+
+// ============================================================================
+// PARAMETER EXTRACTION HELPERS
+// ============================================================================
 
 /**
  * Generates SQL for extracting event parameters from an array
@@ -58,7 +170,7 @@ function EXTRACT_EVENT_PARAMS(sourceArray = 'event_params') {
 
 /**
  * Extracts web-specific parameters
- * Only called when DATA_STREAM_TYPE = 'web' or 'both'
+ * Only called when effective stream type includes web
  */
 function EXTRACT_WEB_PARAMS(sourceArray = 'event_params') {
   if (config.WEB_PARAMS_ARRAY.length === 0) {
@@ -69,7 +181,7 @@ function EXTRACT_WEB_PARAMS(sourceArray = 'event_params') {
 
 /**
  * Extracts app-specific parameters
- * Only called when DATA_STREAM_TYPE = 'app' or 'both'
+ * Only called when effective stream type includes app
  */
 function EXTRACT_APP_PARAMS(sourceArray = 'event_params') {
   if (config.APP_PARAMS_ARRAY.length === 0) {
@@ -80,8 +192,7 @@ function EXTRACT_APP_PARAMS(sourceArray = 'event_params') {
 
 /**
  * Extracts custom event parameters
- * Always extracted regardless of DATA_STREAM_TYPE
- * Use this for implementation-specific parameters
+ * Always extracted regardless of stream type
  */
 function EXTRACT_CUSTOM_PARAMS(sourceArray = 'event_params') {
   if (config.CUSTOM_PARAMS_ARRAY.length === 0) {
@@ -93,14 +204,14 @@ function EXTRACT_CUSTOM_PARAMS(sourceArray = 'event_params') {
 /**
  * Generates consolidation SQL for web/app parameters
  * Creates unified fields when CONSOLIDATE_WEB_APP_PARAMS = true
- * Returns empty string if consolidation is disabled or not applicable
  */
 function CONSOLIDATE_PARAMS() {
-  if (config.DATA_STREAM_TYPE !== 'both' || !config.CONSOLIDATE_WEB_APP_PARAMS) {
+  const effectiveType = getEffectiveDataStreamType();
+  
+  if (effectiveType !== 'both' || !config.CONSOLIDATE_WEB_APP_PARAMS) {
     return '';
   }
   
-  // Build a map of consolidated names to their source fields
   const consolidationMap = {};
   
   config.WEB_PARAMS_ARRAY.forEach(param => {
@@ -121,7 +232,6 @@ function CONSOLIDATE_PARAMS() {
     }
   });
   
-  // Generate COALESCE statements for each consolidated field
   const consolidations = Object.keys(consolidationMap).map(consolidatedName => {
     const sources = consolidationMap[consolidatedName];
     const fields = [];
@@ -140,6 +250,8 @@ function CONSOLIDATE_PARAMS() {
  * Dynamically builds the hash based on what parameters are actually extracted
  */
 function GENERATE_EVENT_KEY_CONCAT() {
+  const effectiveType = getEffectiveDataStreamType();
+  
   const fields = [
     "COALESCE(user_id, '')",
     "COALESCE(CAST(ga_session_id AS STRING), '')",
@@ -147,14 +259,11 @@ function GENERATE_EVENT_KEY_CONCAT() {
     "event_name"
   ];
   
-  // Add core params
   config.CORE_PARAMS_ARRAY.forEach(param => {
     fields.push(`COALESCE(CAST(${param.name} AS STRING), '')`);
   });
   
-  // Handle web/app params based on consolidation
-  if (config.DATA_STREAM_TYPE === 'both' && config.CONSOLIDATE_WEB_APP_PARAMS) {
-    // Use consolidated field names
+  if (effectiveType === 'both' && config.CONSOLIDATE_WEB_APP_PARAMS) {
     const consolidatedNames = new Set();
     
     config.WEB_PARAMS_ARRAY.forEach(param => {
@@ -167,32 +276,28 @@ function GENERATE_EVENT_KEY_CONCAT() {
       if (param.consolidated_name) {
         consolidatedNames.add(param.consolidated_name);
       } else {
-        // App-only params that don't consolidate
         fields.push(`COALESCE(CAST(${param.name} AS STRING), '')`);
       }
     });
     
-    // Add consolidated fields
     consolidatedNames.forEach(name => {
       fields.push(`COALESCE(${name}, '')`);
     });
     
   } else {
-    // Not consolidating - add web and app params separately
-    if (config.DATA_STREAM_TYPE === 'web' || config.DATA_STREAM_TYPE === 'both') {
+    if (effectiveType === 'web' || effectiveType === 'both') {
       config.WEB_PARAMS_ARRAY.forEach(param => {
         fields.push(`COALESCE(${param.name}, '')`);
       });
     }
     
-    if (config.DATA_STREAM_TYPE === 'app' || config.DATA_STREAM_TYPE === 'both') {
+    if (effectiveType === 'app' || effectiveType === 'both') {
       config.APP_PARAMS_ARRAY.forEach(param => {
         fields.push(`COALESCE(CAST(${param.name} AS STRING), '')`);
       });
     }
   }
   
-  // Add custom params (always included)
   config.CUSTOM_PARAMS_ARRAY.forEach(param => {
     fields.push(`COALESCE(CAST(${param.name} AS STRING), '')`);
   });
@@ -204,6 +309,10 @@ function GENERATE_EVENT_KEY_CONCAT() {
  * Generates SQL for extracting user properties
  */
 function EXTRACT_USER_PROPS(sourceArray = 'user_properties') {
+  if (config.CORE_USER_PROPS_ARRAY.length === 0) {
+    return '';
+  }
+  
   return config.CORE_USER_PROPS_ARRAY.map(prop => {
     let valueField;
     
@@ -226,6 +335,10 @@ function EXTRACT_USER_PROPS(sourceArray = 'user_properties') {
     return `(SELECT value.${valueField} FROM UNNEST(${sourceArray}) WHERE key = '${prop.name}') AS ${prop.name}`;
   }).join(',\n        ');
 }
+
+// ============================================================================
+// ITEMS ARRAY HELPERS
+// ============================================================================
 
 /**
  * Internal helper for item params extraction
@@ -309,47 +422,9 @@ function EXTRACT_ITEMS_ARRAY() {
     ) AS items`;
 }
 
-/**
- * Gets the appropriate source table for fresh data loads
- * Now accepts project, dataset, and prefix as parameters from workflow vars
- */
-function GET_FRESH_SOURCE_TABLE(useFreshDaily = config.USE_FRESH_DAILY) {
-  // This will be called from SQLX with workflow vars injected
-  return useFreshDaily 
-    ? "events_fresh_daily_*"  // Return table suffix only
-    : "events_*";
-}
-
-/**
- * Gets the finalized events_* table (for reconciliation and backfill)
- */
-function GET_FINALIZED_SOURCE_TABLE() {
-  return "events_*";  // Return table suffix only
-}
-
-/**
- * Generates WHERE clause for fresh daily load (yesterday)
- */
-function GET_FRESH_LOAD_DATE_FILTER(useFreshDaily = config.USE_FRESH_DAILY) {
-  const yesterdayFilter = "_TABLE_SUFFIX = FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))";
-  
-  if (useFreshDaily) {
-    return yesterdayFilter;
-  }
-  
-  return `${EXCLUDE_INTRADAY_TABLES()} AND ${yesterdayFilter}`;
-}
-
-/**
- * Generates WHERE clause for reconciliation load (N days ago)
- */
-function GET_RECONCILIATION_DATE_FILTER() {
-  const lookbackDays = config.RECONCILIATION_LOOKBACK_DAYS;
-  const excludeIntraday = EXCLUDE_INTRADAY_TABLES();
-  const reconciliationFilter = `_TABLE_SUFFIX = FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL ${lookbackDays} DAY))`;
-  
-  return `${excludeIntraday} AND ${reconciliationFilter}`;
-}
+// ============================================================================
+// DATE & BACKFILL HELPERS
+// ============================================================================
 
 function EXCLUDE_INTRADAY_TABLES() {
   return `_TABLE_SUFFIX NOT LIKE 'intraday%'`;
@@ -369,9 +444,25 @@ function GET_BACKFILL_END_DATE() {
   return `FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))`;
 }
 
+// ============================================================================
+// EXPORTS
+// ============================================================================
+
 module.exports = { 
+  // Config
   getConfig,
+  
+  // Property & Stream Helpers
+  isAdvancedMode,
+  getIncludedStreams,
+  getEffectiveDataStreamType,
+  shouldConsolidateParams,
+  generateStreamFilter,
+  
+  // String Helpers
   REPLACE_NULL_STRING,
+  
+  // Parameter Extraction
   EXTRACT_EVENT_PARAMS,
   EXTRACT_WEB_PARAMS,
   EXTRACT_APP_PARAMS,
@@ -379,11 +470,11 @@ module.exports = {
   CONSOLIDATE_PARAMS,
   GENERATE_EVENT_KEY_CONCAT,
   EXTRACT_USER_PROPS,
+  
+  // Items Array
   EXTRACT_ITEMS_ARRAY,
-  GET_FRESH_SOURCE_TABLE,
-  GET_FINALIZED_SOURCE_TABLE,
-  GET_FRESH_LOAD_DATE_FILTER,
-  GET_RECONCILIATION_DATE_FILTER,
+  
+  // Date & Backfill Helpers
   EXCLUDE_INTRADAY_TABLES,
   GET_BACKFILL_START_DATE,
   GET_BACKFILL_END_DATE
