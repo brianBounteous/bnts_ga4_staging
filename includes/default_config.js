@@ -47,7 +47,7 @@ const PROPERTIES_CONFIG = null;
  * Default data stream type (used when PROPERTIES_CONFIG is null)
  * Options: 'web', 'app', or 'both'
  */
-const DATA_STREAM_TYPE = 'both';
+const DATA_STREAM_TYPE = 'web';
 
 /**
  * Parameter consolidation for combined web/app streams
@@ -152,9 +152,8 @@ const APP_PARAMS_ARRAY = [
  * Add your custom GA4 parameters here
  */
 const CUSTOM_PARAMS_ARRAY = [
-    // Example:
-    // { name: "user_role", type: "string" },
-    // { name: "purchase_value", type: "double" },
+    { name: "blog_word_count", type: "int" },
+    { name: "blog_word_count_cohort", type: "string" },
 ];
 
 /**
