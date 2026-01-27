@@ -7,7 +7,7 @@ config {
   dependencies: []
 }
 
--- Only delete if base_events exists (will fail gracefully on first run)
-DELETE FROM ${ref("base_events")}
+-- Delete last 3 days from base_events (will fail gracefully on first run when table doesn't exist)
+DELETE FROM `${dataform.projectConfig.vars.SOURCE_PROJECT}.${dataform.projectConfig.vars.DESTINATION_DATASET}.base_events`
 WHERE event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
   AND event_date <= DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)

@@ -192,9 +192,6 @@ const coreConfig = {
     BACKFILL_START_DATE,
     BACKFILL_END_DATE,
     
-    // Deprecated
-    RECONCILIATION_LOOKBACK_DAYS,
-    
     // Parameter Arrays
     CORE_PARAMS_ARRAY,
     WEB_PARAMS_ARRAY,

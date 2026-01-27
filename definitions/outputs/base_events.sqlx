@@ -3,7 +3,7 @@ config {
   schema: dataform.projectConfig.vars.DESTINATION_DATASET, 
   description: "Events records with 3-day rolling refresh to capture late arrivals",
   tags: ["daily", "ga4", "core"],
-  dependencies: ["base_events_cleanup"],  // Run cleanup first
+  dependencies: ["base_events_preops"],
   bigquery: {
     partitionBy: "event_date",
     clusterBy: ["event_name", "session_key"],
@@ -16,7 +16,68 @@ js {
   const effectiveDataStreamType = helpers.getEffectiveDataStreamType();
   const shouldConsolidate = helpers.shouldConsolidateParams();
   
-  // ... rest of your JS block stays exactly the same
+  let dateFilter;
+  let sourceTable;
+  let useMixedSources = false;
+  
+  if (!incremental()) {
+    // Table doesn't exist - determine initial load strategy
+    
+    if (config.FORCE_FULL_BACKFILL) {
+      // Manual full backfill mode
+      const startDate = helpers.GET_BACKFILL_START_DATE();
+      const endDate = helpers.GET_BACKFILL_END_DATE();
+      
+      const startDateSQL = startDate.includes('FORMAT_DATE') ? `(${startDate})` : `'${startDate}'`;
+      const endDateSQL = endDate.includes('FORMAT_DATE') ? `(${endDate})` : `'${endDate}'`;
+      
+      dateFilter = `_TABLE_SUFFIX BETWEEN ${startDateSQL} AND ${endDateSQL}`;
+      sourceTable = ref("events_*");
+      
+      console.log(`[BASE_EVENTS] FULL BACKFILL MODE: Loading from ${startDate} to ${endDate}`);
+    } else {
+      // Initial 7-day load (safe default)
+      const daysBack = config.INITIAL_LOAD_DAYS;
+      
+      if (config.USE_FRESH_DAILY) {
+        console.log(`[BASE_EVENTS] Initial ${daysBack}-day load with mixed sources`);
+        console.log(`[BASE_EVENTS] - Days 1-2: events_fresh_daily_*`);
+        console.log(`[BASE_EVENTS] - Days 3-${daysBack}: events_*`);
+        
+        useMixedSources = true;
+        dateFilter = null;
+        sourceTable = null;
+      } else {
+        dateFilter = `_TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL ${daysBack} DAY)) 
+                      AND FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))`;
+        sourceTable = ref("events_*");
+        
+        console.log(`[BASE_EVENTS] Initial ${daysBack}-day load from events_*`);
+      }
+    }
+  } else {
+    // Incremental mode: Load last 3 days with smart table selection
+    if (config.USE_FRESH_DAILY) {
+      console.log(`[BASE_EVENTS] 3-day rolling refresh with mixed sources`);
+      console.log(`[BASE_EVENTS] - Days 1-2: events_fresh_daily_*`);
+      console.log(`[BASE_EVENTS] - Day 3: events_*`);
+      
+      useMixedSources = true;
+      dateFilter = null;
+      sourceTable = null;
+    } else {
+      dateFilter = `_TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY))
+                    AND FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY))`;
+      sourceTable = ref("events_*");
+      
+      console.log(`[BASE_EVENTS] 3-day rolling refresh from events_*`);
+    }
+  }
+  
+  console.log(`[BASE_EVENTS] Effective data stream type: ${effectiveDataStreamType}`);
+  if (effectiveDataStreamType === 'both') {
+    console.log(`[BASE_EVENTS] Consolidate web/app params: ${shouldConsolidate}`);
+  }
 }
 
 WITH raw_data AS (
