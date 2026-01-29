@@ -2,7 +2,7 @@
  * Get merged configuration from core and custom configs
  */
 const getConfig = () => {
-  const { coreConfig } = require("./default_config");
+  const { coreConfig } = require("./core_config");
   return { ...coreConfig };
 };
 
@@ -83,6 +83,27 @@ function shouldConsolidateParams() {
 }
 
 /**
+ * Gets the consolidated field name for a given parameter
+ * @param {string} paramName - Original parameter name (e.g., 'page_location')
+ * @returns {string|null} Consolidated name or null if not consolidated
+ */
+function getConsolidatedFieldName(paramName) {
+  // Check web params
+  const webParam = config.WEB_PARAMS_ARRAY.find(p => p.name === paramName);
+  if (webParam && webParam.consolidated_name) {
+    return webParam.consolidated_name;
+  }
+  
+  // Check app params
+  const appParam = config.APP_PARAMS_ARRAY.find(p => p.name === paramName);
+  if (appParam && appParam.consolidated_name) {
+    return appParam.consolidated_name;
+  }
+  
+  return null;
+}
+
+/**
  * Generates SQL filter for stream_id (used in advanced mode)
  * @param {string} propertyName - Property name from PROPERTIES_CONFIG
  * @returns {string} SQL WHERE clause fragment for stream filtering
@@ -110,6 +131,55 @@ function generateStreamFilter(propertyName) {
   }
   
   return `stream_id IN (${includedStreamIds.join(', ')})`;
+}
+
+/**
+ * Gets screen field references for session aggregations
+ * Returns appropriate field paths based on web/app/both configuration
+ * @returns {object} Object with field references for location, path, referrer, key
+ */
+function getScreenFieldRefs() {
+  const effectiveType = getEffectiveDataStreamType();
+  const consolidate = shouldConsolidateParams();
+  
+  if (effectiveType === 'web') {
+    return {
+      location: 'page.page_location',
+      path: 'page.page_path',
+      referrer: 'page.page_referrer',
+      key: 'page.page_key',
+      title: 'page.page_title'
+    };
+  }
+  
+  if (effectiveType === 'app') {
+    return {
+      location: 'app.firebase_screen',
+      path: 'app.firebase_screen',
+      referrer: 'CAST(NULL AS STRING)',
+      key: 'app.screen_key',
+      title: 'app.firebase_screen_class'
+    };
+  }
+  
+  // Both
+  if (consolidate) {
+    return {
+      location: 'page.screen_location',
+      path: 'page.page_path',
+      referrer: 'page.screen_referrer',
+      key: 'page.screen_key',
+      title: 'page.screen_title'
+    };
+  } else {
+    return {
+      location: 'COALESCE(page.page_location, app.firebase_screen)',
+      path: 'COALESCE(page.page_path, app.firebase_screen)',
+      referrer: 'page.page_referrer',
+      key: 'COALESCE(page.page_key, app.screen_key)',
+      title: 'COALESCE(page.page_title, app.firebase_screen_class)'
+    };
+  }
 }
 
 // ============================================================================
@@ -259,14 +329,11 @@ function GENERATE_EVENT_KEY_CONCAT() {
     "event_name"
   ];
   
-  // Add core params
   config.CORE_PARAMS_ARRAY.forEach(param => {
     fields.push(`COALESCE(CAST(${param.name} AS STRING), '')`);
   });
   
-  // Handle web/app params based on consolidation
   if (effectiveType === 'both' && config.CONSOLIDATE_WEB_APP_PARAMS) {
-    // Use consolidated field names
     const consolidatedNames = new Set();
     
     config.WEB_PARAMS_ARRAY.forEach(param => {
@@ -279,21 +346,18 @@ function GENERATE_EVENT_KEY_CONCAT() {
       if (param.consolidated_name) {
         consolidatedNames.add(param.consolidated_name);
       } else {
-        // App-only params that don't consolidate
         fields.push(`COALESCE(CAST(${param.name} AS STRING), '')`);
       }
     });
     
-    // Add consolidated fields (these are already strings from COALESCE)
     consolidatedNames.forEach(name => {
       fields.push(`COALESCE(${name}, '')`);
     });
     
   } else {
-    // Not consolidating - add web and app params separately
     if (effectiveType === 'web' || effectiveType === 'both') {
       config.WEB_PARAMS_ARRAY.forEach(param => {
-        fields.push(`COALESCE(CAST(${param.name} AS STRING), '')`);  // FIX: Added CAST
+        fields.push(`COALESCE(CAST(${param.name} AS STRING), '')`);
       });
     }
     
@@ -304,7 +368,6 @@ function GENERATE_EVENT_KEY_CONCAT() {
     }
   }
   
-  // Add custom params (always included)
   config.CUSTOM_PARAMS_ARRAY.forEach(param => {
     fields.push(`COALESCE(CAST(${param.name} AS STRING), '')`);
   });
@@ -464,7 +527,9 @@ module.exports = {
   getIncludedStreams,
   getEffectiveDataStreamType,
   shouldConsolidateParams,
+  getConsolidatedFieldName,
   generateStreamFilter,
+  getScreenFieldRefs,
   
   // String Helpers
   REPLACE_NULL_STRING,

@@ -372,30 +372,57 @@ keys_added AS (
             ${helpers.GENERATE_EVENT_KEY_CONCAT()}
         ))) AS event_key,
         
-        -- Page Key: normalized URL/screen identifier
+        -- Page/App/Screen structs based on data stream type
         ${ when(
           effectiveDataStreamType === 'web',
-          `TO_BASE64(MD5(
-          LOWER(TRIM(SPLIT(COALESCE(page_location, ''), '?')[SAFE_OFFSET(0)]))
-        )) AS page_key`
+          `STRUCT(
+          page_location,
+          page_title,
+          page_referrer,
+          REGEXP_EXTRACT(page_location, r'://[^/]+(/[^?#]*)') AS page_path,
+          TO_BASE64(MD5(LOWER(TRIM(SPLIT(COALESCE(page_location, ''), '?')[SAFE_OFFSET(0)])))) AS page_key
+        ) AS page`
         )}
         ${ when(
           effectiveDataStreamType === 'app',
-          `TO_BASE64(MD5(
-          LOWER(TRIM(SPLIT(COALESCE(firebase_screen, ''), '?')[SAFE_OFFSET(0)]))
-        )) AS page_key`
+          `STRUCT(
+          firebase_screen,
+          firebase_screen_class,
+          firebase_screen_id,
+          firebase_previous_screen,
+          TO_BASE64(MD5(LOWER(TRIM(COALESCE(firebase_screen, ''))))) AS screen_key
+        ) AS app`
         )}
         ${ when(
           effectiveDataStreamType === 'both' && shouldConsolidate,
-          `TO_BASE64(MD5(
-          LOWER(TRIM(SPLIT(COALESCE(screen_location, ''), '?')[SAFE_OFFSET(0)]))
-        )) AS page_key`
+          `STRUCT(
+          screen_location,
+          screen_title,
+          screen_referrer,
+          COALESCE(
+            REGEXP_EXTRACT(page_location, r'://[^/]+(/[^?#]*)'),
+            firebase_screen
+          ) AS page_path,
+          TO_BASE64(MD5(LOWER(TRIM(SPLIT(COALESCE(screen_location, ''), '?')[SAFE_OFFSET(0)]))))) AS screen_key
+        ) AS page`
         )}
         ${ when(
           effectiveDataStreamType === 'both' && !shouldConsolidate,
-          `TO_BASE64(MD5(
-          LOWER(TRIM(SPLIT(COALESCE(page_location, firebase_screen, ''), '?')[SAFE_OFFSET(0)]))
-        )) AS page_key`
+          `STRUCT(
+          page_location,
+          page_title,
+          page_referrer,
+          REGEXP_EXTRACT(page_location, r'://[^/]+(/[^?#]*)') AS page_path,
+          TO_BASE64(MD5(LOWER(TRIM(SPLIT(COALESCE(page_location, ''), '?')[SAFE_OFFSET(0)])))) AS page_key
+        ) AS page,
+        
+        STRUCT(
+          firebase_screen,
+          firebase_screen_class,
+          firebase_screen_id,
+          firebase_previous_screen,
+          TO_BASE64(MD5(LOWER(TRIM(COALESCE(firebase_screen, ''))))) AS screen_key
+        ) AS app`
         )}
         
     FROM ${ when(shouldConsolidate, 'consolidated_params', 'processed_events') }

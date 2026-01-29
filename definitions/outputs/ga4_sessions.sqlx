@@ -1,0 +1,207 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.DESTINATION_DATASET,
+  description: "Session-level aggregation with landing/exit screens and engagement metrics",
+  tags: ["daily", "ga4", "sessions"],
+  dependencies: ["base_events"],
+  bigquery: {
+    partitionBy: "session_date",
+    clusterBy: ["user_id", "session_key"]
+  }
+}
+
+js {
+  const helpers = require('includes/helper.js');
+  const config = helpers.getConfig();
+  const effectiveDataStreamType = helpers.getEffectiveDataStreamType();
+  const screenFields = helpers.getScreenFieldRefs();
+  
+  console.log(`[GA4_SESSIONS] Building session aggregations`);
+  console.log(`[GA4_SESSIONS] Effective data stream type: ${effectiveDataStreamType}`);
+}
+
+WITH session_events AS (
+  SELECT
+    -- Session identifiers
+    session_key,
+    user_id,
+    user_pseudo_id,
+    ga_session_number,
+    stream_id,
+    platform,
+    
+    -- Date & timestamps
+    event_date,
+    event_timestamp,
+    event_name,
+    
+    -- Screen/page info (for landing/exit)
+    ${screenFields.location} AS screen_location,
+    ${screenFields.path} AS screen_path,
+    ${screenFields.referrer} AS screen_referrer,
+    ${screenFields.key} AS screen_key,
+    ${screenFields.title} AS screen_title,
+    
+    -- Privacy info
+    privacy_info,
+    
+    -- Device
+    device.category AS device_category,
+    device.operating_system AS device_os,
+    COALESCE(device.browser, device.web_info.browser) AS browser,
+    
+    -- Geography
+    geo.metro,
+    geo.region,
+    geo.country,
+    
+    -- Session traffic source
+    session_traffic_source_last_click.cross_channel_campaign.campaign_id AS campaign_id,
+    session_traffic_source_last_click.cross_channel_campaign.campaign_name AS campaign_name,
+    session_traffic_source_last_click.cross_channel_campaign.source AS source,
+    session_traffic_source_last_click.cross_channel_campaign.medium AS medium,
+    session_traffic_source_last_click.cross_channel_campaign.source_platform AS source_platform,
+    session_traffic_source_last_click.cross_channel_campaign.default_channel_group AS default_channel_group,
+    session_traffic_source_last_click.cross_channel_campaign.primary_channel_group AS primary_channel_group,
+    
+    -- Engagement
+    engagement_time_msec,
+    session_engaged
+    
+  FROM ${ref("base_events")}
+  WHERE session_key IS NOT NULL
+    AND session_key != ''
+),
+
+session_aggregated AS (
+  SELECT
+    -- Session identifiers
+    session_key,
+    user_id,
+    user_pseudo_id,
+    ANY_VALUE(ga_session_number) AS ga_session_number,
+    ANY_VALUE(stream_id) AS stream_id,
+    ANY_VALUE(platform) AS platform,
+    
+    -- Date (use MIN for split-date sessions)
+    MIN(event_date) AS session_date,
+    
+    -- Session timestamps
+    MIN(event_timestamp) AS session_start_timestamp,
+    MAX(event_timestamp) AS session_end_timestamp,
+    
+    -- Landing screen (first event)
+    ARRAY_AGG(screen_location ORDER BY event_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS landing_screen,
+    ARRAY_AGG(screen_path ORDER BY event_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS landing_screen_path,
+    ARRAY_AGG(screen_referrer ORDER BY event_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS landing_screen_referrer,
+    ARRAY_AGG(screen_key ORDER BY event_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS landing_screen_key,
+    ARRAY_AGG(screen_title ORDER BY event_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS landing_screen_title,
+    
+    -- Exit screen (last event)
+    ARRAY_AGG(screen_location ORDER BY event_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS exit_screen,
+    ARRAY_AGG(screen_path ORDER BY event_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS exit_screen_path,
+    ARRAY_AGG(screen_key ORDER BY event_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS exit_screen_key,
+    
+    -- Privacy info (consistent across session)
+    ANY_VALUE(privacy_info) AS privacy_info,
+    
+    -- Device attributes (use APPROX_TOP_COUNT for fields that might legitimately vary)
+    APPROX_TOP_COUNT(device_category, 1)[OFFSET(0)].value AS device_category,
+    APPROX_TOP_COUNT(device_os, 1)[OFFSET(0)].value AS device_os,
+    APPROX_TOP_COUNT(browser, 1)[OFFSET(0)].value AS browser,
+    
+    -- Geography (use APPROX_TOP_COUNT - user might move during session)
+    APPROX_TOP_COUNT(metro, 1)[OFFSET(0)].value AS metro,
+    APPROX_TOP_COUNT(region, 1)[OFFSET(0)].value AS region,
+    APPROX_TOP_COUNT(country, 1)[OFFSET(0)].value AS country,
+    
+    -- Session traffic source (consistent across session)
+    ANY_VALUE(campaign_id) AS campaign_id,
+    ANY_VALUE(campaign_name) AS campaign_name,
+    ANY_VALUE(source) AS source,
+    ANY_VALUE(medium) AS medium,
+    ANY_VALUE(source_platform) AS source_platform,
+    ANY_VALUE(default_channel_group) AS default_channel_group,
+    ANY_VALUE(primary_channel_group) AS primary_channel_group,
+    
+    -- Metrics
+    COUNT(*) AS event_count,
+    SUM(COALESCE(engagement_time_msec, 0)) AS total_engagement_time_msec,
+    COUNT(DISTINCT screen_key) AS unique_screens_viewed,
+    COUNTIF(event_name = 'page_view') AS page_view_count,
+    
+    -- Flags
+    MAX(CASE WHEN session_engaged = '1' THEN TRUE ELSE FALSE END) AS is_engaged_session
+    
+  FROM session_events
+  GROUP BY session_key, user_id, user_pseudo_id
+)
+
+SELECT
+  -- Identifiers
+  session_key,
+  user_id,
+  user_pseudo_id,
+  ga_session_number,
+  stream_id,
+  platform,
+  
+  -- Date
+  session_date,
+  session_start_timestamp,
+  session_end_timestamp,
+  
+  -- Session duration (in seconds)
+  TIMESTAMP_DIFF(
+    TIMESTAMP_MICROS(session_end_timestamp),
+    TIMESTAMP_MICROS(session_start_timestamp),
+    SECOND
+  ) AS session_duration_seconds,
+  
+  -- Landing screen
+  landing_screen,
+  landing_screen_path,
+  landing_screen_referrer,
+  landing_screen_key,
+  landing_screen_title,
+  
+  -- Exit screen
+  exit_screen,
+  exit_screen_path,
+  exit_screen_key,
+  
+  -- Privacy
+  privacy_info.analytics_storage AS analytics_storage,
+  privacy_info.ads_storage AS ads_storage,
+  privacy_info.uses_transient_token AS uses_transient_token,
+  
+  -- Device
+  device_category,
+  device_os,
+  browser,
+  
+  -- Geography
+  metro,
+  region,
+  country,
+  
+  -- Session traffic source
+  campaign_id,
+  campaign_name,
+  source,
+  medium,
+  source_platform,
+  default_channel_group,
+  primary_channel_group,
+  
+  -- Metrics
+  event_count,
+  total_engagement_time_msec,
+  ROUND(total_engagement_time_msec / 1000, 2) AS total_engagement_time_seconds,
+  unique_screens_viewed,
+  page_view_count,
+  
+  -- Flags
+  is_engaged_session
+
+FROM session_aggregated
