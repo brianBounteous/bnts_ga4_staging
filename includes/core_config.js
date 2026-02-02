@@ -51,11 +51,11 @@ const DATA_STREAM_TYPE = 'web';
 
 /**
  * Parameter consolidation for combined web/app streams
- * Only applies when DATA_STREAM_TYPE = 'both' or when processing mixed stream types
+ * ONLY applies when DATA_STREAM_TYPE = 'both'.  Set to 'false' by default
  * true: Consolidates parameters (page_location + firebase_screen → screen_location)
- * false: Keeps web and app parameters separate
+ * false: Keeps web and app parameters separate in their respective STRUCTs
  */
-const CONSOLIDATE_WEB_APP_PARAMS = true;
+const CONSOLIDATE_WEB_APP_PARAMS = false;  
 
 // ============================================================================
 // LOAD STRATEGY CONFIGURATION

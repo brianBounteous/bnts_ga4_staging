@@ -142,6 +142,7 @@ function getScreenFieldRefs() {
   const effectiveType = getEffectiveDataStreamType();
   const consolidate = shouldConsolidateParams();
   
+  // For web-only or app-only, ignore consolidation flag (it's not applicable)
   if (effectiveType === 'web') {
     return {
       location: 'page.page_location',
@@ -162,7 +163,7 @@ function getScreenFieldRefs() {
     };
   }
   
-  // Both
+  // For 'both', check consolidation flag
   if (consolidate) {
     return {
       location: 'page.screen_location',
