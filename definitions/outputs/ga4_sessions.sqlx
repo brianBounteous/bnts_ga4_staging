@@ -16,7 +16,12 @@ js {
   const effectiveDataStreamType = helpers.getEffectiveDataStreamType();
   const screenFields = helpers.getScreenFieldRefs();
   
-  console.log(`[GA4_SESSIONS] Building session aggregations`);
+  // Get traffic source SQL generators
+  const trafficSourceSelectSQL = helpers.getTrafficSourceSelectSQL();
+  const trafficSourceColumnList = helpers.getTrafficSourceColumnList();
+  const trafficSourceAggregateSQL = helpers.getTrafficSourceAggregateSQL();
+  
+  console.log(`[GA4_SESSIONS] Building session aggregation table`);
   console.log(`[GA4_SESSIONS] Effective data stream type: ${effectiveDataStreamType}`);
 }
 
@@ -55,14 +60,8 @@ WITH session_events AS (
     geo.region,
     geo.country,
     
-    -- Session traffic source
-    session_traffic_source_last_click.cross_channel_campaign.campaign_id AS campaign_id,
-    session_traffic_source_last_click.cross_channel_campaign.campaign_name AS campaign_name,
-    session_traffic_source_last_click.cross_channel_campaign.source AS source,
-    session_traffic_source_last_click.cross_channel_campaign.medium AS medium,
-    session_traffic_source_last_click.cross_channel_campaign.source_platform AS source_platform,
-    session_traffic_source_last_click.cross_channel_campaign.default_channel_group AS default_channel_group,
-    session_traffic_source_last_click.cross_channel_campaign.primary_channel_group AS primary_channel_group,
+    -- Session traffic source (dynamic fields)
+    ${trafficSourceSelectSQL},
     
     -- Engagement
     engagement_time_msec,
@@ -115,14 +114,8 @@ session_aggregated AS (
     APPROX_TOP_COUNT(region, 1)[OFFSET(0)].value AS region,
     APPROX_TOP_COUNT(country, 1)[OFFSET(0)].value AS country,
     
-    -- Session traffic source (consistent across session)
-    ANY_VALUE(campaign_id) AS campaign_id,
-    ANY_VALUE(campaign_name) AS campaign_name,
-    ANY_VALUE(source) AS source,
-    ANY_VALUE(medium) AS medium,
-    ANY_VALUE(source_platform) AS source_platform,
-    ANY_VALUE(default_channel_group) AS default_channel_group,
-    ANY_VALUE(primary_channel_group) AS primary_channel_group,
+    -- Session traffic source (consistent across session, dynamic fields)
+    ${trafficSourceAggregateSQL},
     
     -- Metrics
     COUNT(*) AS event_count,
@@ -185,14 +178,8 @@ SELECT
   region,
   country,
   
-  -- Session traffic source
-  campaign_id,
-  campaign_name,
-  source,
-  medium,
-  source_platform,
-  default_channel_group,
-  primary_channel_group,
+  -- Session traffic source (dynamic fields)
+  ${trafficSourceColumnList},
   
   -- Metrics
   event_count,

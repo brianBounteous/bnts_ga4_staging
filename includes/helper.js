@@ -494,6 +494,114 @@ function EXTRACT_ITEMS_ARRAY() {
 }
 
 // ============================================================================
+// TRAFFIC SOURCE HELPERS
+// ============================================================================
+
+/**
+ * Check if custom traffic source logic should be used
+ * @returns {boolean}
+ */
+function shouldUseCustomTrafficSource() {
+  return config.USE_CUSTOM_TRAFFIC_SOURCE_LOGIC === true;
+}
+
+/**
+ * Get default GA4 traffic source field references
+ * @returns {object} Object with traffic source field SQL
+ */
+function getDefaultTrafficSourceFields() {
+  return {
+    session_source: `session_traffic_source_last_click.cross_channel_campaign.source`,
+    session_medium: `session_traffic_source_last_click.cross_channel_campaign.medium`,
+    session_campaign: `session_traffic_source_last_click.cross_channel_campaign.campaign_name`,
+    session_channel_group: `session_traffic_source_last_click.cross_channel_campaign.default_channel_group`
+  };
+}
+
+/**
+ * Get custom traffic source field references
+ * EDIT THIS FUNCTION to implement client-specific traffic source logic
+ * @returns {object} Object with custom traffic source field SQL
+ */
+function getCustomTrafficSourceFields() {
+  // Example: Custom source logic that remaps certain sources
+  return {
+    session_source: `CASE 
+      WHEN session_traffic_source_last_click.cross_channel_campaign.source = 'google' 
+        AND session_traffic_source_last_click.cross_channel_campaign.medium = 'organic' 
+        THEN 'google_organic'
+      WHEN session_traffic_source_last_click.cross_channel_campaign.source LIKE '%facebook%' 
+        THEN 'facebook'
+      ELSE session_traffic_source_last_click.cross_channel_campaign.source
+    END`,
+    
+    // Example: Custom medium logic
+    session_medium: `CASE
+      WHEN session_traffic_source_last_click.cross_channel_campaign.medium IN ('cpc', 'ppc', 'paidsearch') 
+        THEN 'paid_search'
+      WHEN session_traffic_source_last_click.cross_channel_campaign.medium = 'social' 
+        THEN 'organic_social'
+      ELSE session_traffic_source_last_click.cross_channel_campaign.medium
+    END`,
+    
+    // Default pass-through for other fields (customize as needed)
+    session_campaign: `session_traffic_source_last_click.cross_channel_campaign.campaign_name`,
+    session_channel_group: `session_traffic_source_last_click.cross_channel_campaign.default_channel_group`,
+    
+    // Example: Add custom fields
+    session_campaign_id: `session_traffic_source_last_click.cross_channel_campaign.campaign_id`,
+    session_term: `session_traffic_source_last_click.manual_campaign.term`,
+    session_content: `session_traffic_source_last_click.manual_campaign.content`,
+    session_source_platform: `session_traffic_source_last_click.cross_channel_campaign.source_platform`
+  };
+}
+
+/**
+ * Get traffic source field references (default or custom)
+ * @returns {object} Object with traffic source field SQL
+ */
+function getTrafficSourceFields() {
+  if (shouldUseCustomTrafficSource()) {
+    return getCustomTrafficSourceFields();
+  }
+  return getDefaultTrafficSourceFields();
+}
+
+/**
+ * Generate SQL for selecting traffic source fields
+ * Returns comma-separated SELECT statements
+ * @returns {string} SQL for selecting traffic source fields
+ */
+function getTrafficSourceSelectSQL() {
+  const fields = getTrafficSourceFields();
+  return Object.entries(fields)
+    .map(([alias, expr]) => `${expr} AS ${alias}`)
+    .join(',\n    ');
+}
+
+/**
+ * Generate column list for traffic source fields
+ * Returns comma-separated column names for final SELECT
+ * @returns {string} Column names for traffic source fields
+ */
+function getTrafficSourceColumnList() {
+  const fields = getTrafficSourceFields();
+  return Object.keys(fields).join(',\n  ');
+}
+
+/**
+ * Generate ANY_VALUE aggregations for traffic source fields
+ * Returns comma-separated ANY_VALUE statements for aggregation
+ * @returns {string} SQL for aggregating traffic source fields
+ */
+function getTrafficSourceAggregateSQL() {
+  const fields = getTrafficSourceFields();
+  return Object.keys(fields)
+    .map(alias => `ANY_VALUE(${alias}) AS ${alias}`)
+    .join(',\n    ');
+}
+
+// ============================================================================
 // DATE & BACKFILL HELPERS
 // ============================================================================
 
@@ -546,6 +654,13 @@ module.exports = {
   
   // Items Array
   EXTRACT_ITEMS_ARRAY,
+  
+  // Traffic Source Helpers
+  shouldUseCustomTrafficSource,
+  getTrafficSourceFields,
+  getTrafficSourceSelectSQL,
+  getTrafficSourceColumnList,
+  getTrafficSourceAggregateSQL,
   
   // Date & Backfill Helpers
   EXCLUDE_INTRADAY_TABLES,

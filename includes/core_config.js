@@ -99,6 +99,17 @@ const BACKFILL_START_DATE = dataform.projectConfig.vars.BACKFILL_START_DATE || n
 const BACKFILL_END_DATE = dataform.projectConfig.vars.BACKFILL_END_DATE || null;
 
 // ============================================================================
+// CUSTOM TRAFFIC SOURCE DEFINITIONS
+// ============================================================================
+
+/**
+ * Traffic source attribution logic
+ * false: Use default GA4 traffic source fields as-is
+ * true: Use custom traffic source logic defined in helper.js
+ */
+const USE_CUSTOM_TRAFFIC_SOURCE_LOGIC = false;
+
+// ============================================================================
 // PARAMETER EXTRACTION CONFIGURATION
 // ============================================================================
 
@@ -197,6 +208,7 @@ const coreConfig = {
     BACKFILL_END_DATE,
     
     // Parameter Arrays
+    USE_CUSTOM_TRAFFIC_SOURCE_LOGIC,
     CORE_PARAMS_ARRAY,
     WEB_PARAMS_ARRAY,
     APP_PARAMS_ARRAY,
@@ -208,5 +220,3 @@ const coreConfig = {
 module.exports = {
     coreConfig
 };
-
-
