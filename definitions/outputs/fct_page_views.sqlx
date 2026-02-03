@@ -43,7 +43,7 @@ WITH page_view_events AS (
     user_pseudo_id,
     
     -- Dates & timestamps
-    event_date AS session_date,
+    event_date,
     event_timestamp,
     
     -- Page attributes (for convenience, though available via FK)
@@ -112,7 +112,7 @@ page_session_aggregated AS (
     pv.user_pseudo_id,
     
     -- Use the first occurrence date for this page-session
-    MIN(pv.session_date) AS session_date,
+    MIN(pv.event_date) AS event_date,
     
     -- Page attributes (use first values)
     ANY_VALUE(pv.page_location) AS page_location,
