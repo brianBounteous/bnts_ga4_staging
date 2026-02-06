@@ -23,162 +23,212 @@ js {
   const helpers = require('includes/helper.js');
   const config = helpers.getConfig();
   
-  // Track which models are enabled and should be logged
-  const enabledModels = ['base_events', 'sessions', 'dim_pages', 'fct_page_views', "transactions", "ecommerce_items", "user_identity_map", "users"    ];
+  const enabledModels = [
+    'base_events', 'sessions', 'dim_pages', 'fct_page_views',
+    'user_identity_map', 'users'
+  ];
   
   if (config.HAS_ECOMMERCE) {
     enabledModels.push('transactions', 'ecommerce_items');
   }
   
-  if (config.HAS_USER_AGGREGATION) {
-    enabledModels.push('user_identity_map', 'users');
-  }
-  
   console.log(`[MODEL_EXECUTION_LOG] Tracking models: ${enabledModels.join(', ')}`);
 }
 
--- Log execution metadata for base_events
-SELECT
-  CURRENT_TIMESTAMP() AS load_timestamp,
-  CURRENT_DATE() AS load_date,
-  'base_events' AS model_name,
-  event_date,
-  COUNT(*) AS row_count,
-  MIN(event_timestamp) AS min_event_timestamp,
-  MAX(event_timestamp) AS max_event_timestamp,
-  COUNT(DISTINCT session_key) AS unique_sessions,
-  COUNT(DISTINCT user_id) AS unique_users
-FROM ${ref("base_events")}
-WHERE event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
-  AND event_date < CURRENT_DATE()
-GROUP BY event_date
+-- Date spine: one row per date in the rolling refresh window
+WITH date_spine AS (
+  SELECT event_date
+  FROM UNNEST(
+    GENERATE_DATE_ARRAY(
+      DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY),
+      DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)
+    )
+  ) AS event_date
+),
+
+-- ============================================================================
+-- Model stats: aggregate metrics per date for each model
+-- ============================================================================
+
+base_events_stats AS (
+  SELECT
+    event_date,
+    COUNT(*) AS row_count,
+    MIN(event_timestamp) AS min_event_timestamp,
+    MAX(event_timestamp) AS max_event_timestamp,
+    COUNT(DISTINCT session_key) AS sessions,
+    COUNT(DISTINCT user_id) AS users
+  FROM ${ref("base_events")}
+  WHERE event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+    AND event_date < CURRENT_DATE()
+  GROUP BY event_date
+),
+
+sessions_stats AS (
+  SELECT
+    session_date AS event_date,
+    COUNT(*) AS row_count,
+    MIN(session_start_timestamp) AS min_event_timestamp,
+    MAX(session_end_timestamp) AS max_event_timestamp,
+    COUNT(DISTINCT session_key) AS sessions,
+    COUNT(DISTINCT user_id) AS users
+  FROM ${ref("sessions")}
+  WHERE session_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+    AND session_date < CURRENT_DATE()
+  GROUP BY session_date
+),
+
+dim_pages_stats AS (
+  SELECT
+    last_seen_date AS event_date,
+    COUNT(*) AS row_count,
+    CAST(NULL AS INT64) AS min_event_timestamp,
+    CAST(NULL AS INT64) AS max_event_timestamp,
+    CAST(NULL AS INT64) AS sessions,
+    CAST(NULL AS INT64) AS users
+  FROM ${ref("dim_pages")}
+  WHERE last_seen_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+    AND last_seen_date < CURRENT_DATE()
+  GROUP BY last_seen_date
+),
+
+fct_page_views_stats AS (
+  SELECT
+    event_date,
+    COUNT(*) AS row_count,
+    CAST(NULL AS INT64) AS min_event_timestamp,
+    CAST(NULL AS INT64) AS max_event_timestamp,
+    COUNT(DISTINCT session_key) AS sessions,
+    COUNT(DISTINCT user_id) AS users
+  FROM ${ref("fct_page_views")}
+  WHERE event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+    AND event_date < CURRENT_DATE()
+  GROUP BY event_date
+),
+
+user_identity_map_stats AS (
+  SELECT
+    last_seen_date AS event_date,
+    COUNT(*) AS row_count,
+    CAST(NULL AS INT64) AS min_event_timestamp,
+    CAST(NULL AS INT64) AS max_event_timestamp,
+    CAST(NULL AS INT64) AS sessions,
+    COUNT(DISTINCT user_pseudo_id) AS users
+  FROM ${ref("user_identity_map")}
+  WHERE last_seen_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+    AND last_seen_date < CURRENT_DATE()
+  GROUP BY last_seen_date
+),
+
+users_stats AS (
+  SELECT
+    last_seen_date AS event_date,
+    COUNT(*) AS row_count,
+    CAST(NULL AS INT64) AS min_event_timestamp,
+    CAST(NULL AS INT64) AS max_event_timestamp,
+    CAST(NULL AS INT64) AS sessions,
+    COUNT(*) AS users
+  FROM ${ref("users")}
+  WHERE last_seen_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+    AND last_seen_date < CURRENT_DATE()
+  GROUP BY last_seen_date
+)
+
+${ when(config.HAS_ECOMMERCE, `
+,
+transactions_stats AS (
+  SELECT
+    event_date,
+    COUNT(*) AS row_count,
+    MIN(event_timestamp) AS min_event_timestamp,
+    MAX(event_timestamp) AS max_event_timestamp,
+    COUNT(DISTINCT session_key) AS sessions,
+    COUNT(DISTINCT user_id) AS users
+  FROM ${ref("transactions")}
+  WHERE event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+    AND event_date < CURRENT_DATE()
+  GROUP BY event_date
+),
+
+ecommerce_items_stats AS (
+  SELECT
+    event_date,
+    COUNT(*) AS row_count,
+    MIN(event_timestamp) AS min_event_timestamp,
+    MAX(event_timestamp) AS max_event_timestamp,
+    COUNT(DISTINCT session_key) AS sessions,
+    COUNT(DISTINCT user_id) AS users
+  FROM ${ref("ecommerce_items")}
+  WHERE event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+    AND event_date < CURRENT_DATE()
+  GROUP BY event_date
+)
+`)}
+
+-- ============================================================================
+-- Join date spine to each model's stats (guarantees a row per date per model)
+-- ============================================================================
+
+SELECT CURRENT_TIMESTAMP() AS load_timestamp, CURRENT_DATE() AS load_date,
+  'base_events' AS model_name, d.event_date,
+  COALESCE(s.row_count, 0) AS row_count, s.min_event_timestamp, s.max_event_timestamp,
+  COALESCE(s.sessions, 0) AS sessions, COALESCE(s.users, 0) AS users
+FROM date_spine d LEFT JOIN base_events_stats s ON d.event_date = s.event_date
 
 UNION ALL
 
--- Log execution metadata for sessions
-SELECT
-  CURRENT_TIMESTAMP() AS load_timestamp,
-  CURRENT_DATE() AS load_date,
-  'sessions' AS model_name,
-  session_date AS event_date,
-  COUNT(*) AS row_count,
-  MIN(session_start_timestamp) AS min_event_timestamp,
-  MAX(session_end_timestamp) AS max_event_timestamp,
-  COUNT(DISTINCT session_key) AS unique_sessions,
-  COUNT(DISTINCT user_id) AS unique_users
-FROM ${ref("sessions")}
-WHERE session_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
-  AND session_date < CURRENT_DATE()
-GROUP BY session_date
+SELECT CURRENT_TIMESTAMP(), CURRENT_DATE(),
+  'sessions', d.event_date,
+  COALESCE(s.row_count, 0), s.min_event_timestamp, s.max_event_timestamp,
+  COALESCE(s.sessions, 0), COALESCE(s.users, 0)
+FROM date_spine d LEFT JOIN sessions_stats s ON d.event_date = s.event_date
 
 UNION ALL
 
--- Log execution metadata for dim_pages
-SELECT
-  CURRENT_TIMESTAMP() AS load_timestamp,
-  CURRENT_DATE() AS load_date,
-  'dim_pages' AS model_name,
-  last_seen_date AS event_date,
-  COUNT(*) AS row_count,
-  NULL AS min_event_timestamp,
-  NULL AS max_event_timestamp,
-  NULL AS unique_sessions,
-  NULL AS unique_users
-FROM ${ref("dim_pages")}
-WHERE last_seen_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
-  AND last_seen_date < CURRENT_DATE()
-GROUP BY last_seen_date
+SELECT CURRENT_TIMESTAMP(), CURRENT_DATE(),
+  'dim_pages', d.event_date,
+  COALESCE(s.row_count, 0), s.min_event_timestamp, s.max_event_timestamp,
+  s.sessions, s.users
+FROM date_spine d LEFT JOIN dim_pages_stats s ON d.event_date = s.event_date
 
 UNION ALL
 
--- Log execution metadata for fct_page_views
-SELECT
-  CURRENT_TIMESTAMP() AS load_timestamp,
-  CURRENT_DATE() AS load_date,
-  'fct_page_views' AS model_name,
-  event_date,
-  COUNT(*) AS row_count,
-  NULL AS min_event_timestamp,
-  NULL AS max_event_timestamp,
-  COUNT(DISTINCT session_key) AS unique_sessions,
-  COUNT(DISTINCT user_id) AS unique_users
-FROM ${ref("fct_page_views")}
-WHERE event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
-  AND event_date < CURRENT_DATE()
-GROUP BY event_date
+SELECT CURRENT_TIMESTAMP(), CURRENT_DATE(),
+  'fct_page_views', d.event_date,
+  COALESCE(s.row_count, 0), s.min_event_timestamp, s.max_event_timestamp,
+  COALESCE(s.sessions, 0), COALESCE(s.users, 0)
+FROM date_spine d LEFT JOIN fct_page_views_stats s ON d.event_date = s.event_date
+
+UNION ALL
+
+SELECT CURRENT_TIMESTAMP(), CURRENT_DATE(),
+  'user_identity_map', d.event_date,
+  COALESCE(s.row_count, 0), s.min_event_timestamp, s.max_event_timestamp,
+  s.sessions, COALESCE(s.users, 0)
+FROM date_spine d LEFT JOIN user_identity_map_stats s ON d.event_date = s.event_date
+
+UNION ALL
+
+SELECT CURRENT_TIMESTAMP(), CURRENT_DATE(),
+  'users', d.event_date,
+  COALESCE(s.row_count, 0), s.min_event_timestamp, s.max_event_timestamp,
+  s.sessions, COALESCE(s.users, 0)
+FROM date_spine d LEFT JOIN users_stats s ON d.event_date = s.event_date
 
 ${ when(config.HAS_ECOMMERCE, `
 UNION ALL
 
--- Log execution metadata for transactions
-SELECT
-  CURRENT_TIMESTAMP() AS load_timestamp,
-  CURRENT_DATE() AS load_date,
-  'transactions' AS model_name,
-  event_date,
-  COUNT(*) AS row_count,
-  MIN(event_timestamp) AS min_event_timestamp,
-  MAX(event_timestamp) AS max_event_timestamp,
-  COUNT(DISTINCT session_key) AS unique_sessions,
-  COUNT(DISTINCT user_id) AS unique_users
-FROM ${ref("transactions")}
-WHERE event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
-  AND event_date < CURRENT_DATE()
-GROUP BY event_date
+SELECT CURRENT_TIMESTAMP(), CURRENT_DATE(),
+  'transactions', d.event_date,
+  COALESCE(s.row_count, 0), s.min_event_timestamp, s.max_event_timestamp,
+  COALESCE(s.sessions, 0), COALESCE(s.users, 0)
+FROM date_spine d LEFT JOIN transactions_stats s ON d.event_date = s.event_date
 
 UNION ALL
 
--- Log execution metadata for ecommerce_items
-SELECT
-  CURRENT_TIMESTAMP() AS load_timestamp,
-  CURRENT_DATE() AS load_date,
-  'ecommerce_items' AS model_name,
-  event_date,
-  COUNT(*) AS row_count,
-  MIN(event_timestamp) AS min_event_timestamp,
-  MAX(event_timestamp) AS max_event_timestamp,
-  COUNT(DISTINCT session_key) AS unique_sessions,
-  COUNT(DISTINCT user_id) AS unique_users
-FROM ${ref("ecommerce_items")}
-WHERE event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
-  AND event_date < CURRENT_DATE()
-GROUP BY event_date
-`)}
-
-${ when(config.HAS_USER_AGGREGATION, `
-UNION ALL
-
--- Log execution metadata for user_identity_map
-SELECT
-  CURRENT_TIMESTAMP() AS load_timestamp,
-  CURRENT_DATE() AS load_date,
-  'user_identity_map' AS model_name,
-  last_seen_date AS event_date,
-  COUNT(*) AS row_count,
-  NULL AS min_event_timestamp,
-  NULL AS max_event_timestamp,
-  NULL AS unique_sessions,
-  COUNT(DISTINCT user_pseudo_id) AS unique_users
-FROM ${ref("user_identity_map")}
-WHERE last_seen_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
-  AND last_seen_date < CURRENT_DATE()
-GROUP BY last_seen_date
-
-UNION ALL
-
--- Log execution metadata for users
-SELECT
-  CURRENT_TIMESTAMP() AS load_timestamp,
-  CURRENT_DATE() AS load_date,
-  'users' AS model_name,
-  last_seen_date AS event_date,
-  COUNT(*) AS row_count,
-  NULL AS min_event_timestamp,
-  NULL AS max_event_timestamp,
-  NULL AS unique_sessions,
-  COUNT(*) AS unique_users
-FROM ${ref("users")}
-WHERE last_seen_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
-  AND last_seen_date < CURRENT_DATE()
-GROUP BY last_seen_date
+SELECT CURRENT_TIMESTAMP(), CURRENT_DATE(),
+  'ecommerce_items', d.event_date,
+  COALESCE(s.row_count, 0), s.min_event_timestamp, s.max_event_timestamp,
+  COALESCE(s.sessions, 0), COALESCE(s.users, 0)
+FROM date_spine d LEFT JOIN ecommerce_items_stats s ON d.event_date = s.event_date
 `)}
