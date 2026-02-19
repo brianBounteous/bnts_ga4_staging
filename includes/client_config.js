@@ -64,7 +64,7 @@ const CONSOLIDATE_WEB_APP_PARAMS = false;
 
 /**
  * Fresh daily table usage
- * true: Uses events_fresh_daily_* for recent data (faster, available ~4-6 hours after midnight)
+ * true: Uses events_fresh_* for recent data (faster, available ~4-6 hours after midnight)
  * false: Uses only events_* tables (finalized, available ~24 hours after midnight)
  */
 const USE_FRESH_DAILY = false;
