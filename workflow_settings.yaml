@@ -7,4 +7,4 @@ vars:
     SOURCE_PROJECT: server-side-bounteous-ga4-2024
     SOURCE_TABLE_PREFIX: events_
     ENVIRONMENT: prod  
-    HAS_ECOMMERCE: 'true'
+    HAS_ECOMMERCE: 'false'

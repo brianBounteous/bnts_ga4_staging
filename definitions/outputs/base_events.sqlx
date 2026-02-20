@@ -198,7 +198,7 @@ js {
   // Simple mode ref guards: prevents ambiguous ref() when multiple schemas are declared in advanced mode.
   // In advanced mode these are null; the branches that use them are never rendered in that case.
   const simpleEventsRef = helpers.isAdvancedMode() ? null : ref("events_*");
-  const simpleFreshDailyRef = helpers.isAdvancedMode() ? null : ref("events_fresh_*");
+  const simpleFreshDailyRef = (!helpers.isAdvancedMode() && config.USE_FRESH_DAILY) ? ref("events_fresh_*") : null;
 }
 
 WITH raw_data AS (
