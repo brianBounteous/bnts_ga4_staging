@@ -135,8 +135,9 @@ const APP_PARAMS_ARRAY = [
  * Add your custom GA4 parameters here
  */
 const CUSTOM_PARAMS_ARRAY = [
-    { name: "blog_word_count", type: "int" },
-    { name: "blog_word_count_cohort", type: "string" },
+    // Example:
+    // { name: "custom_param_name", type: "string" },
+    // { name: "custom_param_int", type: "int" },
 ];
 
 /**
